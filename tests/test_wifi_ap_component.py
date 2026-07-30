@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def read(relative_path: str) -> str:
     path = ROOT / relative_path
     return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def esp_log_calls(source: str) -> list[str]:
+    return [
+        match.group(0)
+        for match in re.finditer(r"ESP_LOG[A-Z]*\s*\(.*?\);", source, re.DOTALL)
+    ]
 
 
 class WifiApComponentStructureTest(unittest.TestCase):
@@ -41,10 +49,37 @@ class WifiApComponentStructureTest(unittest.TestCase):
 
     def test_password_is_not_logged(self):
         source = read("components/WIFIAP/wifi_ap.c")
-        log_lines = [line.lower() for line in source.splitlines() if "ESP_LOG" in line]
-        self.assertTrue(log_lines)
-        for line in log_lines:
-            self.assertNotIn("password", line)
+        log_calls = esp_log_calls(source)
+        self.assertTrue(log_calls)
+        for call in log_calls:
+            self.assertNotIn("password", call.lower())
+            self.assertNotIn("WIFI_AP_PASSWORD", call)
+
+    def test_password_log_scanner_handles_multiline_calls(self):
+        unsafe_source = """
+        ESP_LOGI(TAG,
+                 "password=%s",
+                 WIFI_AP_PASSWORD);
+        """
+        log_calls = esp_log_calls(unsafe_source)
+        self.assertEqual(1, len(log_calls))
+        self.assertIn("password", log_calls[0].lower())
+        self.assertIn("WIFI_AP_PASSWORD", log_calls[0])
+
+    def test_partial_initialization_has_reverse_order_cleanup(self):
+        source = read("components/WIFIAP/wifi_ap.c")
+        self.assertIn("cleanup_partial_init", source)
+        self.assertIn("esp_wifi_stop()", source)
+        self.assertIn("esp_event_handler_unregister", source)
+        self.assertIn("esp_netif_destroy_default_wifi", source)
+        self.assertIn("esp_wifi_deinit()", source)
+        self.assertIn("esp_event_loop_delete_default()", source)
+
+    def test_ip_getter_distinguishes_not_ready(self):
+        header = read("components/WIFIAP/include/wifi_ap.h")
+        source = read("components/WIFIAP/wifi_ap.c")
+        self.assertIn("empty string until", header)
+        self.assertIn('static char s_ap_ip[16] = "";', source)
 
 
 if __name__ == "__main__":
