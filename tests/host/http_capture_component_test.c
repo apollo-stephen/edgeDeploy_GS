@@ -192,6 +192,11 @@ static void verify_preview_page(const httpd_uri_t *index_uri)
     assert(strstr(request.response_body, "Capture now") != NULL);
     assert(strstr(request.response_body, "Pause auto refresh") != NULL);
     assert(strstr(request.response_body, "setInterval") != NULL);
+    assert(strstr(request.response_body, "width:128px;height:128px") != NULL);
+    assert(strstr(request.response_body,
+                  "setInterval(()=>{if(autoRefresh)capture();},200)") != NULL);
+    assert(strstr(request.response_body,
+                  "if(manual||!preview.src)statusText.textContent='Capturing...';") != NULL);
     assert(strstr(request.response_body, "Date.now()") != NULL);
     assert(strstr(request.response_body, "inFlight") != NULL);
     assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);

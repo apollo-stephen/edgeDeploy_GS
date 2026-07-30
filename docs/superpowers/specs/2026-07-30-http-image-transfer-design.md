@@ -52,9 +52,12 @@ EdgeDeploy project:
 | PCLK | 13 |
 
 The driver uses `PIXFORMAT_JPEG`, `FRAMESIZE_128X128`, JPEG quality 12, two
-frame buffers, and latest-frame acquisition. A mutex ensures that an automatic
-refresh and a manual request cannot own the camera frame buffer concurrently.
-Every successful acquisition must have exactly one matching release.
+frame buffers, and latest-frame acquisition. Low-resolution JPEG mode uses an
+explicit 8192-byte frame-buffer capacity because the component's automatic
+`width * height / 5` estimate caused measured `cam_hal: FB-OVF` frame drops.
+A mutex ensures that an automatic refresh and a manual request cannot own the
+camera frame buffer concurrently. Every successful acquisition must have
+exactly one matching release.
 
 Initialization logs the detected sensor PID. Captures are validated using the
 actual `camera_fb_t` format, width, height, buffer pointer, and length rather
@@ -82,7 +85,7 @@ failures are logged and counted.
 The page displays the current JPEG, status text, actual dimensions, and byte
 count. It supports:
 
-- automatic refresh once per second;
+- automatic refresh every 200 ms without overlapping requests;
 - pausing and resuming automatic refresh; and
 - an immediate manual capture button.
 

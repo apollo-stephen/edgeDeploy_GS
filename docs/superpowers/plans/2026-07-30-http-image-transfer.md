@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Initialize the OV5640, capture native 128x128 JPEG frames, and expose them through a web page supporting one-second automatic refresh and manual capture.
+**Goal:** Initialize the OV5640, capture native 128x128 JPEG frames, and expose them through a web page supporting 200 ms automatic refresh and manual capture.
 
 **Architecture:** A project-owned `CAMERA` component exclusively manages the `esp32-camera` driver and serializes frame ownership. A project-owned `HTTP_CAPTURE` component uses ESP-IDF's built-in `esp_http_server` to acquire one frame per `/capture` request, return it without copying, and release it immediately after the response.
 
@@ -238,7 +238,7 @@ async function capture() {
     inFlight = false;
   }
 }
-setInterval(() => { if (autoRefresh) capture(); }, 1000);
+setInterval(() => { if (autoRefresh) capture(); }, 200);
 ```
 
 The `/capture` handler:

@@ -8,6 +8,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CameraComponentBehaviorTest(unittest.TestCase):
+    def test_jpeg_buffer_has_explicit_low_resolution_headroom(self):
+        defaults_path = ROOT / "sdkconfig.defaults"
+        self.assertTrue(
+            defaults_path.is_file(),
+            msg="sdkconfig.defaults must preserve the JPEG buffer configuration",
+        )
+        values = {}
+        for line in defaults_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("CONFIG_") and "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+
+        self.assertEqual(
+            "y",
+            values.get("CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM"),
+        )
+        self.assertEqual(
+            "8192",
+            values.get("CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE"),
+        )
+
     def test_camera_lifecycle_and_capture_ownership(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             executable = Path(temporary_directory) / "camera_component_test"

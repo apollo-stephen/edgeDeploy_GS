@@ -28,7 +28,7 @@ static const char INDEX_HTML[] =
     "padding:0 1rem;background:#f5f7fa;color:#172033}"
     ".card{background:white;border-radius:16px;padding:1.25rem;"
     "box-shadow:0 8px 28px #18243a1f}"
-    "img{display:block;width:256px;height:256px;max-width:100%;"
+    "img{display:block;width:128px;height:128px;max-width:100%;"
     "margin:1rem auto;image-rendering:auto;background:#e7ebf0;"
     "border-radius:10px;object-fit:contain}"
     ".controls{display:flex;gap:.75rem;flex-wrap:wrap}"
@@ -56,7 +56,7 @@ static const char INDEX_HTML[] =
     "async function capture(manual=false){"
     "if(inFlight){if(manual)pendingManual=true;return;}"
     "inFlight=true;"
-    "statusText.textContent='Capturing...';"
+    "if(manual||!preview.src)statusText.textContent='Capturing...';"
     "try{"
     "const response=await fetch(`/capture?t=${Date.now()}`,{cache:'no-store'});"
     "if(!response.ok)throw new Error(`HTTP ${response.status}`);"
@@ -79,7 +79,7 @@ static const char INDEX_HTML[] =
     "autoButton.textContent=autoRefresh?'Pause auto refresh':'Resume auto refresh';"
     "if(autoRefresh)capture();"
     "});"
-    "setInterval(()=>{if(autoRefresh)capture();},1000);"
+    "setInterval(()=>{if(autoRefresh)capture();},200);"
     "capture();"
     "</script></main></body></html>";
 

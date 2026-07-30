@@ -2,7 +2,7 @@
 
 This ESP32-S3 firmware initializes an OV5640 camera, captures native 128x128
 JPEG frames, and serves them over the board's SoftAP. The browser page supports
-one-second automatic refresh, pause/resume, and manual capture.
+up to five automatic refreshes per second, pause/resume, and manual capture.
 
 This branch intentionally does not include model inference, resizing, MJPEG
 streaming, dataset automation, or LCD output.
@@ -25,6 +25,7 @@ The firmware requests:
 - `FRAMESIZE_128X128`
 - JPEG quality 12
 - two DRAM frame buffers
+- an explicit 8192-byte JPEG frame-buffer capacity
 - latest-frame acquisition
 
 The serial log reports the detected sensor PID. Every HTTP response is also
@@ -66,8 +67,8 @@ Image preview ready at http://192.168.4.1/
 2. Losing normal internet access while connected to this standalone AP is
    expected.
 3. Open `http://192.168.4.1/`.
-4. Leave automatic refresh enabled for a new image approximately once per
-   second, or pause it and press **Capture now**.
+4. Leave automatic refresh enabled for up to five new images per second, or
+   pause it and press **Capture now**.
 
 The page reports the actual width, height, JPEG byte length, and any HTTP
 failure. It prevents overlapping browser requests; the CAMERA component also
