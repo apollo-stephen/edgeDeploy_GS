@@ -8,13 +8,15 @@
 #include "CAMERA.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
+#include "freertos/task.h"
 #include "http_capture.h"
 #include "wifi_ap.h"
 
-static httpd_uri_t s_uris[8];
-static size_t s_uri_count;
-static httpd_config_t s_server_config;
-static int s_stop_calls;
+static httpd_uri_t s_uris[2][8];
+static size_t s_uri_count[2];
+static httpd_config_t s_server_config[2];
+static size_t s_server_count;
+static int s_stop_calls[2];
 static camera_fb_t s_frame;
 static camera_fb_t *s_next_frame = &s_frame;
 static int s_release_calls;
@@ -22,6 +24,16 @@ static int s_sequence;
 static int s_send_sequence;
 static int s_release_sequence;
 static char s_response_copy[8192];
+static uint8_t s_chunk_copy[16384];
+static size_t s_chunk_length;
+static int s_chunk_calls;
+static int64_t s_fake_time_us = 1000000;
+static TickType_t s_last_delay_ticks;
+static int s_delay_calls;
+static bool s_checked_second_client;
+static const httpd_uri_t *s_stream_uri;
+
+static void reset_request(httpd_req_t *request);
 
 const char *esp_err_to_name(esp_err_t err)
 {
@@ -31,24 +43,28 @@ const char *esp_err_to_name(esp_err_t err)
 
 esp_err_t httpd_start(httpd_handle_t *server, const httpd_config_t *config)
 {
-    s_server_config = *config;
-    *server = (httpd_handle_t)0x1;
+    assert(s_server_count < 2);
+    s_server_config[s_server_count] = *config;
+    *server = (httpd_handle_t)(uintptr_t)(s_server_count + 1);
+    ++s_server_count;
     return ESP_OK;
 }
 
 esp_err_t httpd_stop(httpd_handle_t server)
 {
-    assert(server == (httpd_handle_t)0x1);
-    ++s_stop_calls;
+    const size_t index = (size_t)(uintptr_t)server - 1;
+    assert(index < 2);
+    ++s_stop_calls[index];
     return ESP_OK;
 }
 
 esp_err_t httpd_register_uri_handler(httpd_handle_t server,
                                      const httpd_uri_t *uri)
 {
-    assert(server == (httpd_handle_t)0x1);
-    assert(s_uri_count < 8);
-    s_uris[s_uri_count++] = *uri;
+    const size_t index = (size_t)(uintptr_t)server - 1;
+    assert(index < 2);
+    assert(s_uri_count[index] < 8);
+    s_uris[index][s_uri_count[index]++] = *uri;
     return ESP_OK;
 }
 
@@ -97,6 +113,36 @@ esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *body)
     return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
 }
 
+esp_err_t httpd_resp_send_chunk(httpd_req_t *request,
+                                const char *chunk,
+                                ssize_t length)
+{
+    (void)request;
+    ++s_chunk_calls;
+    s_fake_time_us += 1000;
+
+    if (!s_checked_second_client) {
+        s_checked_second_client = true;
+        httpd_req_t second_request = {0};
+        assert(s_stream_uri != NULL);
+        assert(s_stream_uri->handler(&second_request) == ESP_OK);
+        assert(strcmp(second_request.response_status,
+                      "503 Service Unavailable") == 0);
+        reset_request(&second_request);
+    }
+
+    if (s_chunk_calls == 4) {
+        return ESP_FAIL;
+    }
+
+    assert(chunk != NULL);
+    assert(length >= 0);
+    assert(s_chunk_length + (size_t)length < sizeof(s_chunk_copy));
+    memcpy(s_chunk_copy + s_chunk_length, chunk, (size_t)length);
+    s_chunk_length += (size_t)length;
+    return ESP_OK;
+}
+
 esp_err_t httpd_resp_send_err(httpd_req_t *request,
                               const char *status,
                               const char *message)
@@ -114,6 +160,18 @@ size_t heap_caps_get_free_size(unsigned int capabilities)
 {
     assert(capabilities == MALLOC_CAP_SPIRAM);
     return 654321;
+}
+
+int64_t esp_timer_get_time(void)
+{
+    return s_fake_time_us;
+}
+
+void vTaskDelay(TickType_t ticks)
+{
+    s_last_delay_ticks = ticks;
+    ++s_delay_calls;
+    s_fake_time_us += (int64_t)ticks * 1000;
 }
 
 camera_fb_t *camera_capture_frame(uint32_t timeout_ms)
@@ -155,14 +213,50 @@ esp_err_t wifi_ap_init(void)
     return ESP_OK;
 }
 
-static const httpd_uri_t *find_uri(const char *uri)
+static const httpd_uri_t *find_uri(size_t server_index, const char *uri)
 {
-    for (size_t index = 0; index < s_uri_count; ++index) {
-        if (strcmp(s_uris[index].uri, uri) == 0) {
-            return &s_uris[index];
+    assert(server_index < 2);
+    for (size_t index = 0; index < s_uri_count[server_index]; ++index) {
+        if (strcmp(s_uris[server_index][index].uri, uri) == 0) {
+            return &s_uris[server_index][index];
         }
     }
     return NULL;
+}
+
+static void verify_stream(const httpd_uri_t *stream_uri)
+{
+    static uint8_t jpeg[] = {0xff, 0xd8, 0xff, 0xd9};
+    s_frame.buf = jpeg;
+    s_frame.len = sizeof(jpeg);
+    s_frame.width = 128;
+    s_frame.height = 128;
+    s_frame.format = PIXFORMAT_JPEG;
+    s_next_frame = &s_frame;
+    s_stream_uri = stream_uri;
+    s_chunk_length = 0;
+    s_chunk_calls = 0;
+    s_delay_calls = 0;
+    s_checked_second_client = false;
+    const int releases_before = s_release_calls;
+
+    httpd_req_t request = {0};
+    assert(stream_uri->handler(&request) == ESP_FAIL);
+    assert(strcmp(request.response_type,
+                  "multipart/x-mixed-replace;"
+                  "boundary=123456789000000000000987654321") == 0);
+    assert(s_checked_second_client);
+    assert(s_chunk_calls == 4);
+    assert(s_release_calls == releases_before + 2);
+    assert(s_delay_calls == 1);
+    assert(s_last_delay_ticks > 0);
+    assert(s_chunk_length > sizeof(jpeg));
+    assert(memcmp(s_chunk_copy + s_chunk_length - sizeof(jpeg),
+                  jpeg,
+                  sizeof(jpeg)) == 0);
+    assert(strstr((const char *)s_chunk_copy, "Content-Type: image/jpeg") != NULL);
+    assert(strstr((const char *)s_chunk_copy, "Content-Length: 4") != NULL);
+    reset_request(&request);
 }
 
 static const char *find_header(const httpd_req_t *request, const char *name)
@@ -273,26 +367,39 @@ int main(void)
 {
     assert(http_capture_start() == ESP_OK);
     assert(http_capture_start() == ESP_OK);
-    assert(s_uri_count == 3);
-    assert(s_server_config.stack_size == 8192);
-    assert(s_server_config.max_uri_handlers == 8);
-    assert(s_server_config.lru_purge_enable);
+    assert(s_server_count == 2);
+    assert(s_uri_count[0] == 3);
+    assert(s_uri_count[1] == 1);
+    assert(s_server_config[0].server_port == 80);
+    assert(s_server_config[0].ctrl_port == 32768);
+    assert(s_server_config[0].stack_size == 8192);
+    assert(s_server_config[0].max_uri_handlers == 8);
+    assert(s_server_config[0].lru_purge_enable);
+    assert(s_server_config[1].server_port == 81);
+    assert(s_server_config[1].ctrl_port == 32769);
+    assert(s_server_config[1].stack_size == 8192);
+    assert(s_server_config[1].max_uri_handlers == 1);
+    assert(s_server_config[1].lru_purge_enable);
 
-    const httpd_uri_t *index_uri = find_uri("/");
-    const httpd_uri_t *capture_uri = find_uri("/capture");
-    const httpd_uri_t *status_uri = find_uri("/api/status");
+    const httpd_uri_t *index_uri = find_uri(0, "/");
+    const httpd_uri_t *capture_uri = find_uri(0, "/capture");
+    const httpd_uri_t *status_uri = find_uri(0, "/api/status");
+    const httpd_uri_t *stream_uri = find_uri(1, "/stream");
     assert(index_uri != NULL);
     assert(capture_uri != NULL);
     assert(status_uri != NULL);
+    assert(stream_uri != NULL);
 
     verify_preview_page(index_uri);
     verify_valid_capture(capture_uri);
     verify_capture_failures(capture_uri);
+    verify_stream(stream_uri);
     verify_status(status_uri);
 
     http_capture_stop();
     http_capture_stop();
-    assert(s_stop_calls == 1);
+    assert(s_stop_calls[0] == 1);
+    assert(s_stop_calls[1] == 1);
 
     puts("http capture component behavior passed");
     return 0;

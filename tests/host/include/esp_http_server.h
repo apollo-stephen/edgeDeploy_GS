@@ -2,6 +2,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <sys/types.h>
 
 #include "esp_err.h"
 
@@ -30,13 +32,19 @@ typedef struct {
     int stack_size;
     int max_uri_handlers;
     bool lru_purge_enable;
+    uint16_t server_port;
+    uint16_t ctrl_port;
 } httpd_config_t;
 
 #define HTTP_GET 0
 #define HTTPD_RESP_USE_STRLEN ((long)-1)
 #define HTTPD_500_INTERNAL_SERVER_ERROR "500 Internal Server Error"
 #define HTTPD_DEFAULT_CONFIG() \
-    ((httpd_config_t){.stack_size = 4096, .max_uri_handlers = 8, .lru_purge_enable = false})
+    ((httpd_config_t){.stack_size = 4096, \
+                      .max_uri_handlers = 8, \
+                      .lru_purge_enable = false, \
+                      .server_port = 80, \
+                      .ctrl_port = 32768})
 
 esp_err_t httpd_start(httpd_handle_t *server, const httpd_config_t *config);
 esp_err_t httpd_stop(httpd_handle_t server);
@@ -50,6 +58,9 @@ esp_err_t httpd_resp_set_hdr(httpd_req_t *request,
 esp_err_t httpd_resp_send(httpd_req_t *request,
                           const char *body,
                           long length);
+esp_err_t httpd_resp_send_chunk(httpd_req_t *request,
+                                const char *chunk,
+                                ssize_t length);
 esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *body);
 esp_err_t httpd_resp_send_err(httpd_req_t *request,
                               const char *status,
