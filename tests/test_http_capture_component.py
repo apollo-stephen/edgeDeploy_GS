@@ -25,6 +25,7 @@ class HttpCaptureComponentBehaviorTest(unittest.TestCase):
                     "-Wall",
                     "-Wextra",
                     "-Werror",
+                    "-pthread",
                     "-I",
                     str(ROOT / "tests/host/include"),
                     "-I",

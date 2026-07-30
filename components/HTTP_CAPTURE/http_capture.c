@@ -36,6 +36,7 @@ static uint32_t s_capture_failures;
 static size_t s_last_capture_size;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_stream_client_connected;
+static bool s_stream_stop_requested;
 static uint32_t s_stream_frame_count;
 static uint32_t s_stream_failures;
 static double s_stream_fps;
@@ -119,12 +120,28 @@ static bool stream_claim_client(void)
 {
     bool claimed = false;
     portENTER_CRITICAL(&s_state_lock);
-    if (!s_stream_client_connected) {
+    if (!s_stream_client_connected && !s_stream_stop_requested) {
         s_stream_client_connected = true;
         claimed = true;
     }
     portEXIT_CRITICAL(&s_state_lock);
     return claimed;
+}
+
+static bool stream_stop_is_requested(void)
+{
+    bool stop_requested;
+    portENTER_CRITICAL(&s_state_lock);
+    stop_requested = s_stream_stop_requested;
+    portEXIT_CRITICAL(&s_state_lock);
+    return stop_requested;
+}
+
+static void stream_set_stop_requested(bool stop_requested)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_stream_stop_requested = stop_requested;
+    portEXIT_CRITICAL(&s_state_lock);
 }
 
 static void stream_release_client(void)
@@ -281,10 +298,13 @@ static esp_err_t stream_get_handler(httpd_req_t *request)
     uint32_t connection_frames = 0;
     unsigned int consecutive_capture_failures = 0;
 
-    while (result == ESP_OK) {
+    while (result == ESP_OK && !stream_stop_is_requested()) {
         const int64_t frame_started_us = esp_timer_get_time();
         camera_fb_t *frame = camera_capture_frame(CAPTURE_TIMEOUT_MS);
         if (frame == NULL) {
+            if (stream_stop_is_requested()) {
+                break;
+            }
             stream_record_failure();
             ++consecutive_capture_failures;
             if (consecutive_capture_failures >=
@@ -317,6 +337,7 @@ static esp_err_t stream_get_handler(httpd_req_t *request)
                                            frame->len);
         if (header_length < 0 ||
             header_length >= (int)sizeof(part_header)) {
+            stream_record_failure();
             result = ESP_FAIL;
         }
         if (result == ESP_OK) {
@@ -337,7 +358,6 @@ static esp_err_t stream_get_handler(httpd_req_t *request)
         camera_release_frame(frame);
 
         if (result != ESP_OK) {
-            stream_record_failure();
             break;
         }
 
@@ -346,6 +366,10 @@ static esp_err_t stream_get_handler(httpd_req_t *request)
         stream_record_frame(connection_frames,
                             stream_started_us,
                             frame_finished_us);
+
+        if (stream_stop_is_requested()) {
+            break;
+        }
 
         const int64_t elapsed_us = frame_finished_us - frame_started_us;
         const int64_t target_us =
@@ -409,15 +433,46 @@ static esp_err_t register_stream_handler(httpd_handle_t server)
     return httpd_register_uri_handler(server, &stream_uri);
 }
 
-esp_err_t http_capture_start(void)
+static esp_err_t stop_server(httpd_handle_t *server, const char *description)
 {
-    if (s_control_server != NULL && s_stream_server != NULL) {
+    (void)description;
+    if (*server == NULL) {
         return ESP_OK;
     }
+
+    const esp_err_t err = httpd_stop(*server);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "%s stop failed: %s",
+                 description,
+                 esp_err_to_name(err));
+        return err;
+    }
+
+    *server = NULL;
+    return ESP_OK;
+}
+
+esp_err_t http_capture_start(void)
+{
+    if (s_control_server != NULL &&
+        s_stream_server != NULL &&
+        !stream_stop_is_requested()) {
+        return ESP_OK;
+    }
+    if (s_control_server != NULL || s_stream_server != NULL) {
+        http_capture_stop();
+        if (s_control_server != NULL || s_stream_server != NULL) {
+            return ESP_FAIL;
+        }
+    }
+
+    stream_set_stop_requested(false);
 
     httpd_config_t control_config = HTTPD_DEFAULT_CONFIG();
     control_config.stack_size = 8192;
     control_config.max_uri_handlers = 8;
+    control_config.max_open_sockets = 3;
     control_config.lru_purge_enable = true;
 
     esp_err_t err = httpd_start(&s_control_server, &control_config);
@@ -433,8 +488,7 @@ esp_err_t http_capture_start(void)
         ESP_LOGE(TAG,
                  "HTTP handler registration failed: %s",
                  esp_err_to_name(err));
-        httpd_stop(s_control_server);
-        s_control_server = NULL;
+        stop_server(&s_control_server, "HTTP server");
         return err;
     }
 
@@ -443,7 +497,9 @@ esp_err_t http_capture_start(void)
     stream_config.ctrl_port += 1;
     stream_config.stack_size = 8192;
     stream_config.max_uri_handlers = 1;
-    stream_config.lru_purge_enable = true;
+    stream_config.max_open_sockets = 1;
+    stream_config.lru_purge_enable = false;
+    stream_config.send_wait_timeout = 1;
 
     err = httpd_start(&s_stream_server, &stream_config);
     if (err == ESP_OK) {
@@ -453,12 +509,8 @@ esp_err_t http_capture_start(void)
         ESP_LOGE(TAG,
                  "MJPEG stream server startup failed: %s",
                  esp_err_to_name(err));
-        if (s_stream_server != NULL) {
-            httpd_stop(s_stream_server);
-            s_stream_server = NULL;
-        }
-        httpd_stop(s_control_server);
-        s_control_server = NULL;
+        stop_server(&s_stream_server, "MJPEG stream server");
+        stop_server(&s_control_server, "HTTP server");
         return err;
     }
 
@@ -474,23 +526,8 @@ esp_err_t http_capture_start(void)
 
 void http_capture_stop(void)
 {
-    if (s_stream_server != NULL) {
-        const esp_err_t stream_err = httpd_stop(s_stream_server);
-        if (stream_err != ESP_OK) {
-            ESP_LOGW(TAG,
-                     "MJPEG stream server stop failed: %s",
-                     esp_err_to_name(stream_err));
-        }
-        s_stream_server = NULL;
-    }
+    stream_set_stop_requested(true);
 
-    if (s_control_server != NULL) {
-        const esp_err_t control_err = httpd_stop(s_control_server);
-        if (control_err != ESP_OK) {
-            ESP_LOGW(TAG,
-                     "HTTP server stop failed: %s",
-                     esp_err_to_name(control_err));
-        }
-        s_control_server = NULL;
-    }
+    stop_server(&s_stream_server, "MJPEG stream server");
+    stop_server(&s_control_server, "HTTP server");
 }

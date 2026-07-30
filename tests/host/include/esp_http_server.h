@@ -34,6 +34,8 @@ typedef struct {
     bool lru_purge_enable;
     uint16_t server_port;
     uint16_t ctrl_port;
+    size_t max_open_sockets;
+    uint16_t send_wait_timeout;
 } httpd_config_t;
 
 #define HTTP_GET 0
@@ -44,7 +46,9 @@ typedef struct {
                       .max_uri_handlers = 8, \
                       .lru_purge_enable = false, \
                       .server_port = 80, \
-                      .ctrl_port = 32768})
+                      .ctrl_port = 32768, \
+                      .max_open_sockets = 7, \
+                      .send_wait_timeout = 5})
 
 esp_err_t httpd_start(httpd_handle_t *server, const httpd_config_t *config);
 esp_err_t httpd_stop(httpd_handle_t server);

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the 5 FPS snapshot polling preview with a single-client 15 FPS MJPEG stream while reducing OV5640 XCLK from 24 MHz to 16 MHz and preserving `/capture`.
+**Goal:** Replace the 5 FPS snapshot polling preview with a single-session 15 FPS MJPEG stream while reducing OV5640 XCLK from 24 MHz to 16 MHz and preserving `/capture`.
 
 **Architecture:** Keep the existing CAMERA ownership API and double-buffer latest-frame mode. Run page, status, and still capture on HTTP port 80, and run the long-lived MJPEG handler on a second ESP-IDF HTTP server on port 81 with a distinct control port. Protect cross-server stream metrics with a short FreeRTOS critical section.
 
@@ -12,7 +12,7 @@
 
 - Preserve native 128×128 JPEG, JPEG quality 12, double buffering, `CAMERA_GRAB_LATEST`, and the 8192-byte custom JPEG frame buffer.
 - Set camera XCLK to exactly 16,000,000 Hz.
-- Limit MJPEG output to one client and a 67 ms minimum frame period.
+- Limit the MJPEG server to one socket and a 67 ms minimum frame period.
 - Keep `/capture` and all existing status fields.
 - Do not add storage, authentication, OTA, or a custom camera producer task.
 - Do not log successful frames individually.
@@ -92,7 +92,7 @@ git commit -m "fix: reduce OV5640 capture clock"
 
 - [ ] **Step 1: Extend host fakes and write failing stream tests**
 
-Extend `httpd_config_t` with `server_port` and `ctrl_port`, and add:
+Extend `httpd_config_t` with the server, control, socket-limit, and send-timeout fields, and add:
 
 ```c
 esp_err_t httpd_resp_send_chunk(httpd_req_t *request,
@@ -112,7 +112,7 @@ and this sequence:
 boundary -> JPEG headers -> JPEG bytes -> frame release
 ```
 
-Force the next chunk call to fail after one complete frame so the infinite handler exits. Assert that the frame is returned and a simultaneous second stream request receives `503 Service Unavailable`.
+Force the next chunk call to fail after one complete frame so the infinite handler exits. Assert that the frame is returned. Verify that the stream server uses exactly one open socket, disables LRU purging, and uses a one-second send timeout so a stalled client cannot hold the camera mutex for the default five seconds.
 
 - [ ] **Step 2: Run the focused test and verify failure**
 
@@ -144,7 +144,7 @@ uint32_t stream_failures;
 double stream_fps;
 ```
 
-Implement a stream handler that atomically claims the one-client slot, sends native JPEG chunks, releases every acquired frame on every path, delays only the remainder of the 67 ms period, and clears the client flag before returning.
+Implement a stream handler that claims the stream slot, sends native JPEG chunks, releases every acquired frame on every path, delays only the remainder of the 67 ms period, and clears the client flag before returning. Add a synchronized stop request so a healthy stream exits before `httpd_stop()` waits for the HTTP task.
 
 - [ ] **Step 4: Start and stop the second HTTP server**
 
@@ -155,7 +155,9 @@ stream_config.server_port = 81;
 stream_config.ctrl_port += 1;
 stream_config.stack_size = 8192;
 stream_config.max_uri_handlers = 1;
-stream_config.lru_purge_enable = true;
+stream_config.max_open_sockets = 1;
+stream_config.lru_purge_enable = false;
+stream_config.send_wait_timeout = 1;
 ```
 
 If stream startup or handler registration fails, stop every server already started and return the original error. Stop the stream server before the control server.

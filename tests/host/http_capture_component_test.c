@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,8 +31,18 @@ static int s_chunk_calls;
 static int64_t s_fake_time_us = 1000000;
 static TickType_t s_last_delay_ticks;
 static int s_delay_calls;
-static bool s_checked_second_client;
 static const httpd_uri_t *s_stream_uri;
+static int s_register_calls;
+static int s_fail_register_call;
+static bool s_fail_control_stop_once;
+static bool s_fail_control_stop;
+static bool s_fail_stream_stop;
+static pthread_mutex_t s_stream_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_stream_condition = PTHREAD_COND_INITIALIZER;
+static bool s_wait_for_stream_exit_on_stop;
+static bool s_stream_send_started;
+static bool s_stream_stop_called;
+static bool s_stream_handler_finished;
 
 static void reset_request(httpd_req_t *request);
 
@@ -55,6 +66,22 @@ esp_err_t httpd_stop(httpd_handle_t server)
     const size_t index = (size_t)(uintptr_t)server - 1;
     assert(index < 2);
     ++s_stop_calls[index];
+    if ((index == 0 && s_fail_control_stop) ||
+        (index == 1 && s_fail_stream_stop)) {
+        return ESP_FAIL;
+    }
+    if (index == 0 && s_fail_control_stop_once && s_stop_calls[index] == 1) {
+        return ESP_FAIL;
+    }
+    if (index == 1 && s_wait_for_stream_exit_on_stop) {
+        pthread_mutex_lock(&s_stream_mutex);
+        s_stream_stop_called = true;
+        pthread_cond_broadcast(&s_stream_condition);
+        while (!s_stream_handler_finished) {
+            pthread_cond_wait(&s_stream_condition, &s_stream_mutex);
+        }
+        pthread_mutex_unlock(&s_stream_mutex);
+    }
     return ESP_OK;
 }
 
@@ -63,6 +90,10 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t server,
 {
     const size_t index = (size_t)(uintptr_t)server - 1;
     assert(index < 2);
+    ++s_register_calls;
+    if (s_fail_register_call == s_register_calls) {
+        return ESP_FAIL;
+    }
     assert(s_uri_count[index] < 8);
     s_uris[index][s_uri_count[index]++] = *uri;
     return ESP_OK;
@@ -121,15 +152,13 @@ esp_err_t httpd_resp_send_chunk(httpd_req_t *request,
     ++s_chunk_calls;
     s_fake_time_us += 1000;
 
-    if (!s_checked_second_client) {
-        s_checked_second_client = true;
-        httpd_req_t second_request = {0};
-        assert(s_stream_uri != NULL);
-        assert(s_stream_uri->handler(&second_request) == ESP_OK);
-        assert(strcmp(second_request.response_status,
-                      "503 Service Unavailable") == 0);
-        reset_request(&second_request);
+    pthread_mutex_lock(&s_stream_mutex);
+    s_stream_send_started = true;
+    pthread_cond_broadcast(&s_stream_condition);
+    while (s_wait_for_stream_exit_on_stop && !s_stream_stop_called) {
+        pthread_cond_wait(&s_stream_condition, &s_stream_mutex);
     }
+    pthread_mutex_unlock(&s_stream_mutex);
 
     if (s_chunk_calls == 4) {
         return ESP_FAIL;
@@ -237,7 +266,6 @@ static void verify_stream(const httpd_uri_t *stream_uri)
     s_chunk_length = 0;
     s_chunk_calls = 0;
     s_delay_calls = 0;
-    s_checked_second_client = false;
     const int releases_before = s_release_calls;
 
     httpd_req_t request = {0};
@@ -245,11 +273,10 @@ static void verify_stream(const httpd_uri_t *stream_uri)
     assert(strcmp(request.response_type,
                   "multipart/x-mixed-replace;"
                   "boundary=123456789000000000000987654321") == 0);
-    assert(s_checked_second_client);
     assert(s_chunk_calls == 4);
     assert(s_release_calls == releases_before + 2);
     assert(s_delay_calls == 1);
-    assert(s_last_delay_ticks > 0);
+    assert(s_last_delay_ticks == 64);
     assert(s_chunk_length > sizeof(jpeg));
     assert(memcmp(s_chunk_copy + s_chunk_length - sizeof(jpeg),
                   jpeg,
@@ -257,6 +284,109 @@ static void verify_stream(const httpd_uri_t *stream_uri)
     assert(strstr((const char *)s_chunk_copy, "Content-Type: image/jpeg") != NULL);
     assert(strstr((const char *)s_chunk_copy, "Content-Length: 4") != NULL);
     reset_request(&request);
+}
+
+typedef struct {
+    const httpd_uri_t *stream_uri;
+    httpd_req_t request;
+    esp_err_t result;
+} stream_thread_context_t;
+
+static void *run_stream_handler(void *argument)
+{
+    stream_thread_context_t *context = argument;
+    context->result = context->stream_uri->handler(&context->request);
+
+    pthread_mutex_lock(&s_stream_mutex);
+    s_stream_handler_finished = true;
+    pthread_cond_broadcast(&s_stream_condition);
+    pthread_mutex_unlock(&s_stream_mutex);
+    return NULL;
+}
+
+static void verify_stream_stops_cleanly(const httpd_uri_t *stream_uri)
+{
+    s_stream_uri = stream_uri;
+    s_chunk_length = 0;
+    s_chunk_calls = 0;
+    s_delay_calls = 0;
+    s_wait_for_stream_exit_on_stop = true;
+    s_stream_send_started = false;
+    s_stream_stop_called = false;
+    s_stream_handler_finished = false;
+    const int releases_before = s_release_calls;
+
+    stream_thread_context_t context = {
+        .stream_uri = stream_uri,
+        .request = {0},
+        .result = ESP_FAIL,
+    };
+    pthread_t stream_thread;
+    assert(pthread_create(&stream_thread,
+                          NULL,
+                          run_stream_handler,
+                          &context) == 0);
+
+    pthread_mutex_lock(&s_stream_mutex);
+    while (!s_stream_send_started) {
+        pthread_cond_wait(&s_stream_condition, &s_stream_mutex);
+    }
+    pthread_mutex_unlock(&s_stream_mutex);
+
+    http_capture_stop();
+    assert(pthread_join(stream_thread, NULL) == 0);
+    assert(context.result == ESP_OK);
+    assert(s_chunk_calls == 3);
+    assert(s_release_calls == releases_before + 1);
+    assert(s_delay_calls == 0);
+    assert(s_stop_calls[0] == 1);
+    assert(s_stop_calls[1] == 1);
+    reset_request(&context.request);
+    s_wait_for_stream_exit_on_stop = false;
+}
+
+static void verify_failed_rollback_keeps_server_handle(void)
+{
+    memset(s_uri_count, 0, sizeof(s_uri_count));
+    memset(s_stop_calls, 0, sizeof(s_stop_calls));
+    s_server_count = 0;
+    s_register_calls = 0;
+    s_fail_register_call = 1;
+    s_fail_control_stop_once = true;
+
+    assert(http_capture_start() == ESP_FAIL);
+    assert(s_server_count == 1);
+    assert(s_stop_calls[0] == 1);
+
+    http_capture_stop();
+    assert(s_stop_calls[0] == 2);
+}
+
+static void verify_start_retries_incomplete_stop(void)
+{
+    memset(s_uri_count, 0, sizeof(s_uri_count));
+    memset(s_stop_calls, 0, sizeof(s_stop_calls));
+    s_server_count = 0;
+    s_register_calls = 0;
+    s_fail_register_call = 0;
+    s_fail_control_stop_once = false;
+
+    assert(http_capture_start() == ESP_OK);
+    s_fail_control_stop = true;
+    s_fail_stream_stop = true;
+    http_capture_stop();
+    assert(s_stop_calls[0] == 1);
+    assert(s_stop_calls[1] == 1);
+
+    assert(http_capture_start() == ESP_FAIL);
+    assert(s_stop_calls[0] == 2);
+    assert(s_stop_calls[1] == 2);
+
+    s_fail_control_stop = false;
+    s_fail_stream_stop = false;
+    http_capture_stop();
+    assert(s_stop_calls[0] == 3);
+    assert(s_stop_calls[1] == 3);
 }
 
 static const char *find_header(const httpd_req_t *request, const char *name)
@@ -368,7 +498,7 @@ static void verify_status(const httpd_uri_t *status_uri)
     assert(strstr(request.response_body,
                   "\"stream_client_connected\":false") != NULL);
     assert(strstr(request.response_body, "\"stream_frame_count\":") != NULL);
-    assert(strstr(request.response_body, "\"stream_failures\":") != NULL);
+    assert(strstr(request.response_body, "\"stream_failures\":0") != NULL);
     assert(strstr(request.response_body, "\"stream_fps\":") != NULL);
     assert(strstr(request.response_body, "\"free_heap_bytes\":123456") != NULL);
     assert(strstr(request.response_body, "\"free_psram_bytes\":654321") != NULL);
@@ -387,11 +517,15 @@ int main(void)
     assert(s_server_config[0].stack_size == 8192);
     assert(s_server_config[0].max_uri_handlers == 8);
     assert(s_server_config[0].lru_purge_enable);
+    assert(s_server_config[0].max_open_sockets == 3);
+    assert(s_server_config[0].send_wait_timeout == 5);
     assert(s_server_config[1].server_port == 81);
     assert(s_server_config[1].ctrl_port == 32769);
     assert(s_server_config[1].stack_size == 8192);
     assert(s_server_config[1].max_uri_handlers == 1);
-    assert(s_server_config[1].lru_purge_enable);
+    assert(!s_server_config[1].lru_purge_enable);
+    assert(s_server_config[1].max_open_sockets == 1);
+    assert(s_server_config[1].send_wait_timeout == 1);
 
     const httpd_uri_t *index_uri = find_uri(0, "/");
     const httpd_uri_t *capture_uri = find_uri(0, "/capture");
@@ -407,11 +541,15 @@ int main(void)
     verify_capture_failures(capture_uri);
     verify_stream(stream_uri);
     verify_status(status_uri);
+    verify_stream_stops_cleanly(stream_uri);
 
     http_capture_stop();
     http_capture_stop();
     assert(s_stop_calls[0] == 1);
     assert(s_stop_calls[1] == 1);
+
+    verify_failed_rollback_keeps_server_handle();
+    verify_start_retries_incomplete_stop();
 
     puts("http capture component behavior passed");
     return 0;
