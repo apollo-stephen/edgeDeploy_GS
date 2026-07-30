@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HttpCaptureComponentBehaviorTest(unittest.TestCase):
+    def test_timer_dependency_is_explicit(self):
+        cmake = (
+            ROOT / "components/HTTP_CAPTURE/CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("esp_timer", cmake)
+
     def test_routes_capture_ownership_and_preview_controls(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             executable = Path(temporary_directory) / "http_capture_component_test"
