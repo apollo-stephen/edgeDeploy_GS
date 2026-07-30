@@ -143,7 +143,8 @@ static void verify_camera_configuration(void)
     assert(s_config.pin_vsync == 6);
     assert(s_config.pin_href == 7);
     assert(s_config.pin_pclk == 13);
-    assert(s_config.xclk_freq_hz == 24000000);
+    assert(CAMERA_XCLK_FREQ_HZ == 16000000U);
+    assert(s_config.xclk_freq_hz == CAMERA_XCLK_FREQ_HZ);
     assert(s_config.pixel_format == PIXFORMAT_JPEG);
     assert(s_config.frame_size == FRAMESIZE_128X128);
     assert(s_config.jpeg_quality == 12);

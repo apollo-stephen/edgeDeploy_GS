@@ -39,7 +39,7 @@ esp_err_t camera_init(void)
         .pin_vsync = VSYNC_GPIO_NUM,
         .pin_href = HREF_GPIO_NUM,
         .pin_pclk = PCLK_GPIO_NUM,
-        .xclk_freq_hz = 24000000,
+        .xclk_freq_hz = CAMERA_XCLK_FREQ_HZ,
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,

@@ -9,6 +9,7 @@
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  15
+#define CAMERA_XCLK_FREQ_HZ 16000000U
 #define SIOD_GPIO_NUM  4
 #define SIOC_GPIO_NUM  5
 
