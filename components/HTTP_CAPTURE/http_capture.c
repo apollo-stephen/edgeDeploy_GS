@@ -16,6 +16,7 @@
 
 #define CAPTURE_TIMEOUT_MS 2000
 #define STREAM_SERVER_PORT 81
+#define STREAM_TARGET_FPS 15
 #define STREAM_FRAME_PERIOD_MS 67
 #define STREAM_RETRY_DELAY_MS 20
 #define STREAM_MAX_CAPTURE_FAILURES 3
@@ -59,49 +60,42 @@ static const char INDEX_HTML[] =
     "#statusText{min-height:1.5rem;color:#46546a}"
     "</style></head><body><main class=\"card\">"
     "<h1>OV5640 capture</h1>"
-    "<p>Native 128x128 JPEG preview</p>"
+    "<p>Native 128x128 MJPEG preview at 15 FPS</p>"
     "<img id=\"preview\" alt=\"Camera capture\">"
-    "<p id=\"statusText\">Waiting for the first capture...</p>"
+    "<p id=\"statusText\">Starting preview...</p>"
     "<div class=\"controls\">"
     "<button id=\"captureButton\" type=\"button\">Capture now</button>"
-    "<button id=\"autoButton\" class=\"secondary\" type=\"button\">"
-    "Pause auto refresh</button></div>"
+    "<button id=\"streamButton\" class=\"secondary\" type=\"button\">"
+    "Pause preview</button></div>"
     "<script>"
     "const preview=document.getElementById('preview');"
     "const statusText=document.getElementById('statusText');"
     "const captureButton=document.getElementById('captureButton');"
-    "const autoButton=document.getElementById('autoButton');"
-    "let inFlight=false;"
-    "let pendingManual=false;"
-    "let autoRefresh=true;"
-    "async function capture(manual=false){"
-    "if(inFlight){if(manual)pendingManual=true;return;}"
-    "inFlight=true;"
-    "if(manual||!preview.src)statusText.textContent='Capturing...';"
-    "try{"
-    "const response=await fetch(`/capture?t=${Date.now()}`,{cache:'no-store'});"
-    "if(!response.ok)throw new Error(`HTTP ${response.status}`);"
-    "const blob=await response.blob();"
-    "const oldUrl=preview.src;"
-    "preview.src=URL.createObjectURL(blob);"
-    "if(oldUrl.startsWith('blob:'))URL.revokeObjectURL(oldUrl);"
-    "const width=response.headers.get('X-Frame-Width')||'?';"
-    "const height=response.headers.get('X-Frame-Height')||'?';"
-    "statusText.textContent=`${width}x${height}, ${blob.size} bytes`;"
-    "}catch(error){statusText.textContent=`Capture failed: ${error.message}`;}"
-    "finally{"
-    "inFlight=false;"
-    "if(pendingManual){pendingManual=false;capture(true);}"
+    "const streamButton=document.getElementById('streamButton');"
+    "const streamUrl=`http://${location.hostname}:81/stream`;"
+    "let streaming=false;"
+    "function startStream(){"
+    "preview.src=`${streamUrl}?t=${Date.now()}`;"
+    "streaming=true;"
+    "streamButton.textContent='Pause preview';"
+    "statusText.textContent='Streaming at up to 15 FPS';"
     "}"
+    "function stopStream(){"
+    "preview.removeAttribute('src');"
+    "streaming=false;"
+    "streamButton.textContent='Resume preview';"
+    "statusText.textContent='Preview paused';"
     "}"
-    "captureButton.addEventListener('click',()=>capture(true));"
-    "autoButton.addEventListener('click',()=>{"
-    "autoRefresh=!autoRefresh;"
-    "autoButton.textContent=autoRefresh?'Pause auto refresh':'Resume auto refresh';"
-    "if(autoRefresh)capture();"
+    "captureButton.addEventListener('click',()=>{"
+    "window.open(`/capture?t=${Date.now()}`,'_blank','noopener');"
     "});"
-    "setInterval(()=>{if(autoRefresh)capture();},200);"
-    "capture();"
+    "streamButton.addEventListener('click',()=>{"
+    "if(streaming)stopStream();else startStream();"
+    "});"
+    "preview.addEventListener('error',()=>{"
+    "if(streaming)statusText.textContent='Stream disconnected; pause and resume to retry';"
+    "});"
+    "startStream();"
     "</script></main></body></html>";
 
 static esp_err_t index_get_handler(httpd_req_t *request)
@@ -165,17 +159,38 @@ static void stream_record_frame(uint32_t connection_frames,
 
 static esp_err_t status_get_handler(httpd_req_t *request)
 {
-    char response[384];
+    bool stream_client_connected;
+    uint32_t stream_frame_count;
+    uint32_t stream_failures;
+    double stream_fps;
+    portENTER_CRITICAL(&s_state_lock);
+    stream_client_connected = s_stream_client_connected;
+    stream_frame_count = s_stream_frame_count;
+    stream_failures = s_stream_failures;
+    stream_fps = s_stream_fps;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    char response[640];
     const size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const int length = snprintf(
         response,
         sizeof(response),
         "{\"camera_ready\":%s,\"frame_size\":\"%s\","
+        "\"camera_xclk_hz\":%u,\"stream_target_fps\":%u,"
+        "\"stream_client_connected\":%s,"
+        "\"stream_frame_count\":%" PRIu32 ","
+        "\"stream_failures\":%" PRIu32 ",\"stream_fps\":%.2f,"
         "\"capture_count\":%" PRIu32 ",\"capture_failures\":%" PRIu32 ","
         "\"last_capture_bytes\":%u,\"free_heap_bytes\":%u,"
         "\"free_psram_bytes\":%u}",
         camera_is_ready() ? "true" : "false",
         camera_frame_size_name(),
+        (unsigned int)CAMERA_XCLK_FREQ_HZ,
+        (unsigned int)STREAM_TARGET_FPS,
+        stream_client_connected ? "true" : "false",
+        stream_frame_count,
+        stream_failures,
+        stream_fps,
         s_capture_count,
         s_capture_failures,
         (unsigned int)s_last_capture_size,

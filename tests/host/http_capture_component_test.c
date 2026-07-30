@@ -284,15 +284,18 @@ static void verify_preview_page(const httpd_uri_t *index_uri)
     assert(index_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_type, "text/html; charset=utf-8") == 0);
     assert(strstr(request.response_body, "Capture now") != NULL);
-    assert(strstr(request.response_body, "Pause auto refresh") != NULL);
-    assert(strstr(request.response_body, "setInterval") != NULL);
+    assert(strstr(request.response_body, "Pause preview") != NULL);
     assert(strstr(request.response_body, "width:128px;height:128px") != NULL);
     assert(strstr(request.response_body,
-                  "setInterval(()=>{if(autoRefresh)capture();},200)") != NULL);
+                  "const streamUrl=`http://${location.hostname}:81/stream`;") != NULL);
     assert(strstr(request.response_body,
-                  "if(manual||!preview.src)statusText.textContent='Capturing...';") != NULL);
+                  "preview.src=`${streamUrl}?t=${Date.now()}`;") != NULL);
+    assert(strstr(request.response_body, "window.open") != NULL);
     assert(strstr(request.response_body, "Date.now()") != NULL);
-    assert(strstr(request.response_body, "inFlight") != NULL);
+    assert(strstr(request.response_body, "setInterval") == NULL);
+    assert(strstr(request.response_body, "response.blob()") == NULL);
+    assert(strstr(request.response_body, "URL.createObjectURL") == NULL);
+    assert(strstr(request.response_body, "fetch(`/capture") == NULL);
     assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);
     reset_request(&request);
 }
@@ -358,6 +361,15 @@ static void verify_status(const httpd_uri_t *status_uri)
     assert(strcmp(request.response_type, "application/json") == 0);
     assert(strstr(request.response_body, "\"camera_ready\":true") != NULL);
     assert(strstr(request.response_body, "\"frame_size\":\"128x128\"") != NULL);
+    assert(strstr(request.response_body,
+                  "\"camera_xclk_hz\":16000000") != NULL);
+    assert(strstr(request.response_body,
+                  "\"stream_target_fps\":15") != NULL);
+    assert(strstr(request.response_body,
+                  "\"stream_client_connected\":false") != NULL);
+    assert(strstr(request.response_body, "\"stream_frame_count\":") != NULL);
+    assert(strstr(request.response_body, "\"stream_failures\":") != NULL);
+    assert(strstr(request.response_body, "\"stream_fps\":") != NULL);
     assert(strstr(request.response_body, "\"free_heap_bytes\":123456") != NULL);
     assert(strstr(request.response_body, "\"free_psram_bytes\":654321") != NULL);
     reset_request(&request);
