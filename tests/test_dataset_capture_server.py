@@ -11,6 +11,9 @@ from dataset_capture import CaptureAlreadyRunningError
 from dataset_capture_server import create_server
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class FakeManager:
     def __init__(self):
         self.state = {
@@ -351,6 +354,13 @@ class DatasetCaptureServerTest(unittest.TestCase):
         self.assertEqual("Internal server error", json.loads(body)["error"])
         self.assertNotIn("Traceback", decoded)
         self.assertNotIn("private status detail", decoded)
+
+    def test_readme_documents_local_capture_console(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("python3 dataset_capture_server.py", readme)
+        self.assertIn("http://127.0.0.1:8000", readme)
+        self.assertIn("data/<数据集名称>/", readme)
+        self.assertIn("停止并保存", readme)
 
 
 if __name__ == "__main__":
