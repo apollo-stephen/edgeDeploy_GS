@@ -274,3 +274,49 @@ class CaptureManagerTest(unittest.TestCase):
 
         self.assertFalse(manager.snapshot()["running"])
         self.assertEqual(1, client.capture_calls)
+
+    def test_stop_does_not_join_a_worker_started_during_stop(self):
+        class BlockingClient(FakeClient):
+            def __init__(self, outcomes):
+                super().__init__(outcomes)
+                self.worker_started = threading.Event()
+
+            def wait_for_stream_release(self, timeout_seconds=3.0):
+                super().wait_for_stream_release(timeout_seconds)
+                self.worker_started.set()
+
+        client = BlockingClient([self.frame])
+        manager = CaptureManager(self.data_root, client)
+        start_thread = None
+
+        class StartDuringStopEvent(threading.Event):
+            def __init__(self):
+                super().__init__()
+                self.triggered = False
+
+            def set(self):
+                nonlocal start_thread
+                super().set()
+                if not self.triggered:
+                    self.triggered = True
+                    start_thread = threading.Thread(
+                        target=manager.start,
+                        args=("wet", 60_000),
+                    )
+                    start_thread.start()
+                    client.worker_started.wait(0.2)
+
+        manager._stop_event = StartDuringStopEvent()
+        stop_finished = threading.Event()
+        stop_thread = threading.Thread(
+            target=lambda: (manager.stop(), stop_finished.set()),
+        )
+
+        stop_thread.start()
+        try:
+            self.assertTrue(stop_finished.wait(1.0))
+        finally:
+            manager._stop_event.set()
+            stop_thread.join(1.0)
+            if start_thread is not None:
+                start_thread.join(1.0)

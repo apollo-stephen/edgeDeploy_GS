@@ -328,8 +328,8 @@ class CaptureManager:
             return dict(self._state)
 
     def stop(self) -> dict[str, object]:
-        self._stop_event.set()
         with self._lock:
+            self._stop_event.set()
             worker = self._worker
         if worker is not None and worker is not threading.current_thread():
             worker.join()
