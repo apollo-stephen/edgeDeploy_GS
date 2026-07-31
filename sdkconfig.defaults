@@ -1,0 +1,4 @@
+# Reserve enough space for low-resolution JPEG frames whose encoded size can
+# exceed the component's width * height / 5 automatic estimate.
+CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM=y
+CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=8192

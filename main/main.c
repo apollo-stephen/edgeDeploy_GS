@@ -1,5 +1,7 @@
+#include "CAMERA.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "http_capture.h"
 #include "nvs_flash.h"
 #include "wifi_ap.h"
 
@@ -29,10 +31,31 @@ void app_main(void)
         return;
     }
 
+    err = camera_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Camera initialization failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
     err = wifi_ap_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
                  "WiFiAP initialization failed: %s",
                  esp_err_to_name(err));
+        return;
     }
+
+    err = http_capture_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "HTTP capture startup failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG,
+             "Image preview ready at http://%s/",
+             wifi_ap_get_ip());
 }
