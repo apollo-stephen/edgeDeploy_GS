@@ -1,11 +1,10 @@
 # EdgeDeploy GS: OV5640 HTTP Image Transfer
 
-This ESP32-S3 firmware initializes an OV5640 camera, captures native 128x128
-JPEG frames, and serves them over the board's SoftAP. The browser page supports
-up to five automatic refreshes per second, pause/resume, and manual capture.
+This ESP32-S3 firmware initializes an OV5640 camera and serves native 128x128
+MJPEG and single-frame JPEG capture over the board's SoftAP.
 
-This branch intentionally does not include model inference, resizing, MJPEG
-streaming, dataset automation, or LCD output.
+This branch intentionally does not include model inference, resizing, or LCD
+output.
 
 ## Requirements
 
@@ -67,8 +66,9 @@ Image preview ready at http://192.168.4.1/
 2. Losing normal internet access while connected to this standalone AP is
    expected.
 3. Open `http://192.168.4.1/`.
-4. Leave automatic refresh enabled for up to five new images per second, or
-   pause it and press **Capture now**.
+4. Start the native MJPEG preview to view the live camera feed, or pause the
+   preview when it is not needed. Press **Capture now** to request a separate
+   single JPEG frame.
 
 The page reports the actual width, height, JPEG byte length, and any HTTP
 failure. It prevents overlapping browser requests; the CAMERA component also
@@ -94,6 +94,27 @@ Content-Type: image/jpeg
 X-Frame-Width: 128
 X-Frame-Height: 128
 ```
+
+## 本机连续采集数据集
+
+Python 本机控制台使用固件现有的 HTTP 接口，因此无需重新构建或烧录 ESP32
+固件。先让 Mac 连接到 ESP32 SoftAP，再在项目根目录运行：
+
+```bash
+python3 dataset_capture_server.py
+```
+
+然后按以下步骤操作：
+
+1. 在浏览器打开 `http://127.0.0.1:8000`。
+2. 输入数据集名称和拍照间隔。
+3. 按“开始连续拍照”。
+4. 需要结束时按“停止并保存”。
+5. JPEG 图片和 `metadata.csv` 位于 `data/<数据集名称>/`。
+
+开始采集前，页面显示来自 ESP32 的 MJPEG 预览。按下“开始连续拍照”后，
+连续采集期间会断开预览，以便单帧采集独占摄像头。手动停止或任务自动终止后，
+页面会重新连接预览，便于继续确认画面或开始下一轮采集。
 
 ## Verification boundary
 
