@@ -48,8 +48,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <input id="intervalMs" type="number" min="200" max="60000" value="__DEFAULT_INTERVAL_MS__">
     </label>
     <div>
-      <button id="startButton" type="button">开始连续拍照</button>
-      <button id="stopButton" type="button">停止并保存</button>
+      <button id="startButton" type="button" disabled>开始连续拍照</button>
+      <button id="stopButton" type="button" disabled>停止并保存</button>
     </div>
     <dl>
       <dt>运行状态</dt><dd id="runningState">读取中</dd>
@@ -71,6 +71,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     const failedCount = document.getElementById("failedCount");
     const latestFile = document.getElementById("latestFile");
     const lastError = document.getElementById("lastError");
+    let transition = "initializing";
+    let refreshGeneration = 0;
+
+    startButton.disabled = true;
+    stopButton.disabled = true;
 
     function stopPreview() {
       preview.removeAttribute("src");
@@ -99,21 +104,58 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       failedCount.textContent = state.failed_count;
       latestFile.textContent = state.latest_file || "—";
       lastError.textContent = state.last_error || "—";
-      startButton.disabled = state.running;
-      stopButton.disabled = !state.running;
       if (state.running) {
         stopPreview();
+      }
+      if (transition === "idle") {
+        startButton.disabled = state.running;
+        stopButton.disabled = !state.running;
+      } else {
+        startButton.disabled = true;
+        stopButton.disabled = true;
       }
     }
 
     async function refreshStatus() {
+      const generation = ++refreshGeneration;
       const state = await requestJson("/api/status");
+      if (generation !== refreshGeneration ||
+          transition === "starting" ||
+          transition === "stopping") {
+        return null;
+      }
       renderStatus(state);
       return state;
     }
 
+    async function synchronizeStatus() {
+      try {
+        const state = await refreshStatus();
+        if (state === null) {
+          return null;
+        }
+        if (transition === "initializing") {
+          transition = "idle";
+          renderStatus(state);
+          if (!state.running) {
+            startPreview();
+          }
+        }
+        return state;
+      } catch (error) {
+        stopPreview();
+        startButton.disabled = true;
+        stopButton.disabled = true;
+        lastError.textContent = error.message;
+        return null;
+      }
+    }
+
     startButton.addEventListener("click", async () => {
+      transition = "starting";
+      refreshGeneration += 1;
       startButton.disabled = true;
+      stopButton.disabled = true;
       stopPreview();
       await new Promise(resolve => setTimeout(resolve, 200));
       try {
@@ -124,42 +166,43 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
             interval_ms: Number(intervalMs.value),
           }),
         });
+        transition = "idle";
+        refreshGeneration += 1;
         renderStatus(state);
       } catch (error) {
-        startPreview();
+        transition = "initializing";
+        refreshGeneration += 1;
+        await synchronizeStatus();
         lastError.textContent = error.message;
-        startButton.disabled = false;
       }
     });
 
     stopButton.addEventListener("click", async () => {
+      transition = "stopping";
+      refreshGeneration += 1;
+      startButton.disabled = true;
       stopButton.disabled = true;
       try {
-        await requestJson("/api/capture/stop", {
+        const state = await requestJson("/api/capture/stop", {
           method: "POST",
           body: JSON.stringify({}),
         });
-        await refreshStatus();
+        transition = "idle";
+        refreshGeneration += 1;
+        renderStatus(state);
         startPreview();
       } catch (error) {
+        transition = "initializing";
+        refreshGeneration += 1;
+        await synchronizeStatus();
         lastError.textContent = error.message;
-        stopButton.disabled = false;
       }
     });
 
-    refreshStatus()
-      .then(state => {
-        if (state.running) {
-          stopPreview();
-        } else {
-          startPreview();
-        }
-      })
-      .catch(error => {
-        stopPreview();
-        lastError.textContent = error.message;
+    synchronizeStatus()
+      .finally(() => {
+        setInterval(synchronizeStatus, 500);
       });
-    setInterval(refreshStatus, 500);
   </script>
 </body>
 </html>

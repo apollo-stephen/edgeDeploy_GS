@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
+import re
+import subprocess
 import threading
+import textwrap
 import unittest
 from urllib import error, request
 
@@ -104,15 +107,137 @@ class DatasetCaptureServerTest(unittest.TestCase):
         self.assertIn('id="datasetName" maxlength="64"', page)
         self.assertIn('id="intervalMs" type="number"', page)
         self.assertIn('min="200" max="60000" value="500"', page)
-        self.assertIn('id="startButton"', page)
-        self.assertIn('id="stopButton"', page)
+        self.assertIn('id="startButton" type="button" disabled', page)
+        self.assertIn('id="stopButton" type="button" disabled', page)
         self.assertIn(
             'const streamUrl = "http://192.168.4.1:81/stream";',
             page,
         )
         self.assertIn('preview.removeAttribute("src");', page)
         self.assertIn('preview.src = `${streamUrl}?t=${Date.now()}`;', page)
-        self.assertIn("setInterval(refreshStatus, 500)", page)
+        self.assertIn("setInterval(synchronizeStatus, 500)", page)
+
+    def test_deferred_status_and_start_conflict_keep_preview_disconnected(self):
+        _, _, _, body = self.request("GET", "/")
+        script = re.search(
+            r"<script>(.*)</script>",
+            body.decode("utf-8"),
+            re.DOTALL,
+        ).group(1)
+        harness = textwrap.dedent(
+            """
+            const assert = require("node:assert/strict");
+            const elements = new Map();
+            function element(id) {
+              const value = {
+                id,
+                disabled: false,
+                textContent: "",
+                value: id === "datasetName" ? "wet" : "500",
+                listeners: {},
+                removeAttribute(name) { delete this[name]; },
+                addEventListener(name, listener) { this.listeners[name] = listener; },
+              };
+              elements.set(id, value);
+              return value;
+            }
+            global.document = {
+              getElementById(id) { return elements.get(id) || element(id); },
+            };
+            global.setTimeout = callback => queueMicrotask(callback);
+            let intervalCallback;
+            global.setInterval = callback => { intervalCallback = callback; };
+
+            function response(ok, status, value) {
+              return {ok, status, async json() { return value; }};
+            }
+            let resolveInitial;
+            let resolveStart;
+            let statusCalls = 0;
+            global.fetch = (path, options = {}) => {
+              if (path === "/api/status") {
+                statusCalls += 1;
+                if (statusCalls === 1) {
+                  return new Promise(resolve => {
+                    resolveInitial = () => resolve(response(true, 200, {
+                      running: false, saved_count: 0, failed_count: 0,
+                      latest_file: null, last_error: null,
+                    }));
+                  });
+                }
+                if (statusCalls === 2) {
+                  return Promise.resolve(response(true, 200, {
+                    running: false, saved_count: 0, failed_count: 0,
+                    latest_file: null, last_error: null,
+                  }));
+                }
+                return Promise.resolve(response(true, 200, {
+                  running: true, saved_count: 0, failed_count: 0,
+                  latest_file: null, last_error: null,
+                }));
+              }
+              if (path === "/api/capture/start") {
+                return new Promise(resolve => {
+                  resolveStart = () => resolve(response(false, 409, {
+                    error: "already running",
+                  }));
+                });
+              }
+              throw new Error(`unexpected request: ${path}`);
+            };
+            """
+        )
+        assertions = textwrap.dedent(
+            """
+            async function drain() {
+              await new Promise(resolve => setImmediate(resolve));
+              await new Promise(resolve => setImmediate(resolve));
+            }
+            (async () => {
+              const previewElement = elements.get("preview");
+              const startElement = elements.get("startButton");
+              const stopElement = elements.get("stopButton");
+              assert.equal(startElement.disabled, true);
+              assert.equal(stopElement.disabled, true);
+              assert.equal(previewElement.src, undefined);
+
+              resolveInitial();
+              await drain();
+              assert.equal(startElement.disabled, false);
+              assert.match(previewElement.src, /^http:\\/\\/192\\.168\\.4\\.1:81\\/stream\\?t=/);
+
+              const click = startElement.listeners.click();
+              await drain();
+              assert.equal(previewElement.src, undefined);
+              await intervalCallback();
+              await drain();
+              assert.equal(startElement.disabled, true);
+              assert.equal(previewElement.src, undefined);
+
+              resolveStart();
+              await click;
+              await drain();
+              assert.equal(startElement.disabled, true);
+              assert.equal(stopElement.disabled, false);
+              assert.equal(previewElement.src, undefined);
+              assert.equal(elements.get("lastError").textContent, "already running");
+            })().catch(error => {
+              console.error(error);
+              process.exitCode = 1;
+            });
+            """
+        )
+
+        completed = subprocess.run(
+            ["node"],
+            input=harness + script + assertions,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
 
     def test_status_start_and_stop_return_json_state(self):
         status, content_type, cache_control, body = self.request("GET", "/api/status")
