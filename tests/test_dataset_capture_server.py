@@ -361,6 +361,7 @@ class DatasetCaptureServerTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8000", readme)
         self.assertIn("data/<数据集名称>/", readme)
         self.assertIn("停止并保存", readme)
+        self.assertNotIn("automatic refresh", readme)
 
 
 if __name__ == "__main__":

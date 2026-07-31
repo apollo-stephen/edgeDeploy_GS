@@ -66,8 +66,9 @@ Image preview ready at http://192.168.4.1/
 2. Losing normal internet access while connected to this standalone AP is
    expected.
 3. Open `http://192.168.4.1/`.
-4. Leave automatic refresh enabled for up to five new images per second, or
-   pause it and press **Capture now**.
+4. Start the native MJPEG preview to view the live camera feed, or pause the
+   preview when it is not needed. Press **Capture now** to request a separate
+   single JPEG frame.
 
 The page reports the actual width, height, JPEG byte length, and any HTTP
 failure. It prevents overlapping browser requests; the CAMERA component also
