@@ -5,12 +5,13 @@ from datetime import datetime
 from pathlib import Path
 import csv
 import hashlib
+import io
 import json
 import os
 import re
+import stat
 import threading
 import time
-import unicodedata
 from urllib import request
 
 
@@ -43,8 +44,16 @@ def normalize_dataset_name(value: str) -> str:
         raise ValueError("Dataset name cannot be a path component")
     if "/" in normalized or "\\" in normalized:
         raise ValueError("Dataset name cannot contain path separators")
-    if any(unicodedata.category(character).startswith("C") for character in normalized):
-        raise ValueError("Dataset name cannot contain control characters")
+    if not all(
+        character in " _-"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or "0" <= character <= "9"
+        or "\u3400" <= character <= "\u4dbf"
+        or "\u4e00" <= character <= "\u9fff"
+        for character in normalized
+    ):
+        raise ValueError("Dataset name contains unsupported characters")
     return normalized
 
 
@@ -116,8 +125,6 @@ class DatasetWriter:
             destination = self.directory / filename
             temporary = Path(f"{destination}.part")
             metadata_path = self.directory / "metadata.csv"
-            metadata_existed = metadata_path.exists()
-            metadata_size = metadata_path.stat().st_size if metadata_existed else 0
             if destination.exists():
                 raise FileExistsError(destination)
 
@@ -127,11 +134,36 @@ class DatasetWriter:
                     frame_file.flush()
                     os.fsync(frame_file.fileno())
                 temporary.replace(destination)
+                metadata_created = False
+                metadata_identity = None
                 try:
-                    self._append_metadata(destination, frame, index)
+                    (
+                        metadata_fd,
+                        metadata_created,
+                        metadata_size,
+                        metadata_identity,
+                    ) = self._open_metadata(metadata_path)
+                    try:
+                        self._append_metadata(
+                            metadata_fd,
+                            metadata_size == 0,
+                            destination,
+                            frame,
+                            index,
+                        )
+                        os.fsync(metadata_fd)
+                    except Exception:
+                        self._restore_metadata(metadata_fd, metadata_size)
+                        raise
+                    finally:
+                        os.close(metadata_fd)
                 except Exception:
                     destination.unlink(missing_ok=True)
-                    self._restore_metadata(metadata_path, metadata_existed, metadata_size)
+                    if metadata_created and metadata_identity is not None:
+                        self._unlink_metadata_if_same_file(
+                            metadata_path,
+                            metadata_identity,
+                        )
                     raise
             finally:
                 temporary.unlink(missing_ok=True)
@@ -140,16 +172,69 @@ class DatasetWriter:
             return destination
 
     @staticmethod
-    def _restore_metadata(metadata_path: Path, existed: bool, size: int) -> None:
-        if existed:
-            with metadata_path.open("r+b") as metadata_file:
-                metadata_file.truncate(size)
-        else:
-            metadata_path.unlink(missing_ok=True)
+    def _open_metadata(metadata_path: Path) -> tuple[int, bool, int, tuple[int, int]]:
+        flags = os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        created = False
+        try:
+            metadata_fd = os.open(
+                metadata_path,
+                flags | os.O_CREAT | os.O_EXCL,
+                0o644,
+            )
+            created = True
+        except FileExistsError:
+            metadata_fd = os.open(metadata_path, flags)
 
-    def _append_metadata(self, destination: Path, frame: Frame, index: int) -> None:
-        metadata_path = self.directory / "metadata.csv"
-        write_header = not metadata_path.exists() or metadata_path.stat().st_size == 0
+        try:
+            metadata_stat = os.fstat(metadata_fd)
+            if not stat.S_ISREG(metadata_stat.st_mode):
+                raise OSError("metadata.csv must be a regular file")
+            return (
+                metadata_fd,
+                created,
+                metadata_stat.st_size,
+                (metadata_stat.st_dev, metadata_stat.st_ino),
+            )
+        except Exception:
+            os.close(metadata_fd)
+            raise
+
+    @staticmethod
+    def _restore_metadata(metadata_fd: int, size: int) -> None:
+        os.ftruncate(metadata_fd, size)
+        os.fsync(metadata_fd)
+
+    @staticmethod
+    def _unlink_metadata_if_same_file(
+        metadata_path: Path,
+        identity: tuple[int, int],
+    ) -> None:
+        try:
+            metadata_stat = metadata_path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if (metadata_stat.st_dev, metadata_stat.st_ino) == identity:
+            metadata_path.unlink()
+
+    @staticmethod
+    def _write_metadata(metadata_fd: int, payload: bytes) -> None:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(metadata_fd, remaining)
+            if written == 0:
+                raise OSError("metadata.csv write made no progress")
+            remaining = remaining[written:]
+
+    def _append_metadata(
+        self,
+        metadata_fd: int,
+        write_header: bool,
+        destination: Path,
+        frame: Frame,
+        index: int,
+    ) -> None:
         row = {
             "relative_path": destination.name,
             "dataset_name": self.dataset_name,
@@ -159,11 +244,12 @@ class DatasetWriter:
             "sha256": hashlib.sha256(frame.payload).hexdigest(),
             "source_url": frame.source_url,
         }
-        with metadata_path.open("a", encoding="utf-8", newline="") as metadata_file:
-            writer = csv.DictWriter(metadata_file, fieldnames=self.METADATA_FIELDS)
-            if write_header:
-                writer.writeheader()
-            writer.writerow(row)
+        metadata_buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(metadata_buffer, fieldnames=self.METADATA_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+        self._write_metadata(metadata_fd, metadata_buffer.getvalue().encode("utf-8"))
 
 
 class Esp32Client:

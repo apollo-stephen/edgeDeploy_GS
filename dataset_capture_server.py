@@ -73,16 +73,22 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     const lastError = document.getElementById("lastError");
     let transition = "initializing";
     let refreshGeneration = 0;
+    let previewConnected = false;
 
     startButton.disabled = true;
     stopButton.disabled = true;
 
     function stopPreview() {
       preview.removeAttribute("src");
+      previewConnected = false;
     }
 
     function startPreview() {
+      if (previewConnected) {
+        return;
+      }
       preview.src = `${streamUrl}?t=${Date.now()}`;
+      previewConnected = true;
     }
 
     async function requestJson(path, options = {}) {
@@ -106,6 +112,8 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       lastError.textContent = state.last_error || "—";
       if (state.running) {
         stopPreview();
+      } else if (transition === "idle") {
+        startPreview();
       }
       if (transition === "idle") {
         startButton.disabled = state.running;

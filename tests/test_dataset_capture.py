@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import csv
 import json
+import os
 import tempfile
 import threading
 import time
@@ -81,9 +82,28 @@ class Esp32Handler(BaseHTTPRequestHandler):
 
 
 class DatasetStorageTest(unittest.TestCase):
-    def test_dataset_name_accepts_unicode_and_rejects_path_escape(self):
-        self.assertEqual("可回收物 01", normalize_dataset_name(" 可回收物 01 "))
-        for value in ("", ".", "..", "../wet", "wet/hot", "wet\\hot", "bad\nname"):
+    def test_dataset_name_accepts_confirmed_allowlist_and_rejects_other_text(self):
+        for value, expected in (
+            (" 可回收物 01 ", "可回收物 01"),
+            ("Data_set-02", "Data_set-02"),
+            ("\u3400\u4dbf\u4e00\u9fff", "\u3400\u4dbf\u4e00\u9fff"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(expected, normalize_dataset_name(value))
+
+        for value in (
+            "",
+            ".",
+            "..",
+            "../wet",
+            "wet/hot",
+            "wet\\hot",
+            "bad\nname",
+            "wet!",
+            "湿垃圾。",
+            "湿垃圾♻️",
+            "wet🔥",
+        ):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     normalize_dataset_name(value)
@@ -131,10 +151,42 @@ class DatasetStorageTest(unittest.TestCase):
             self.assertEqual("wet", rows[0]["dataset_name"])
             self.assertEqual("4", rows[0]["index"])
 
+    def test_writer_rejects_metadata_symlink_without_changing_outside_file(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            root = temporary_root / "data"
+            outside = temporary_root / "outside.csv"
+            outside.write_text("outside content\n", encoding="utf-8")
+            writer = DatasetWriter(root, "wet")
+            (writer.directory / "metadata.csv").symlink_to(outside)
+            frame = Frame(JPEG, "http://device/capture", datetime.now(timezone.utc))
+
+            with self.assertRaises(OSError):
+                writer.save(frame)
+
+            self.assertEqual("outside content\n", outside.read_text(encoding="utf-8"))
+            self.assertEqual([], list(writer.directory.glob("*.jpg")))
+
+    def test_writer_rejects_dangling_metadata_symlink_without_creating_target(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            root = temporary_root / "data"
+            outside = temporary_root / "outside.csv"
+            writer = DatasetWriter(root, "wet")
+            (writer.directory / "metadata.csv").symlink_to(outside)
+            frame = Frame(JPEG, "http://device/capture", datetime.now(timezone.utc))
+
+            with self.assertRaises(OSError):
+                writer.save(frame)
+
+            self.assertFalse(outside.exists())
+            self.assertEqual([], list(writer.directory.glob("*.jpg")))
+
     def test_writer_rolls_back_partial_metadata_when_metadata_append_fails(self):
         class FailingWriter(DatasetWriter):
-            def _append_metadata(self, destination, frame, index):
-                (self.directory / "metadata.csv").write_text("partial row", encoding="utf-8")
+            @staticmethod
+            def _write_metadata(metadata_fd, payload):
+                os.write(metadata_fd, payload[:10])
                 raise OSError("disk full")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -147,6 +199,29 @@ class DatasetStorageTest(unittest.TestCase):
 
             self.assertEqual([], list(writer.directory.glob("*.jpg")))
             self.assertFalse((writer.directory / "metadata.csv").exists())
+
+    def test_writer_restores_existing_metadata_when_append_fails(self):
+        class FailingWriter(DatasetWriter):
+            @staticmethod
+            def _write_metadata(metadata_fd, payload):
+                os.write(metadata_fd, payload[:10])
+                raise OSError("disk full")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "data"
+            writer = FailingWriter(root, "wet")
+            metadata_path = writer.directory / "metadata.csv"
+            metadata_path.write_text("existing metadata\n", encoding="utf-8")
+            frame = Frame(JPEG, "http://device/capture", datetime.now(timezone.utc))
+
+            with self.assertRaises(OSError):
+                writer.save(frame)
+
+            self.assertEqual([], list(writer.directory.glob("*.jpg")))
+            self.assertEqual(
+                "existing metadata\n",
+                metadata_path.read_text(encoding="utf-8"),
+            )
 
     def test_two_writers_allocate_distinct_indices(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -242,6 +242,108 @@ class DatasetCaptureServerTest(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
 
+    def test_automatic_capture_stop_reconnects_preview_exactly_once(self):
+        _, _, _, body = self.request("GET", "/")
+        script = re.search(
+            r"<script>(.*)</script>",
+            body.decode("utf-8"),
+            re.DOTALL,
+        ).group(1)
+        harness = textwrap.dedent(
+            """
+            const assert = require("node:assert/strict");
+            const elements = new Map();
+            function element(id) {
+              const value = {
+                id,
+                disabled: false,
+                textContent: "",
+                value: id === "datasetName" ? "wet" : "500",
+                listeners: {},
+                sourceAssignments: 0,
+                sourceValue: undefined,
+                removeAttribute(name) {
+                  if (name === "src") {
+                    this.sourceValue = undefined;
+                  }
+                },
+                addEventListener(name, listener) { this.listeners[name] = listener; },
+              };
+              Object.defineProperty(value, "src", {
+                get() { return this.sourceValue; },
+                set(source) {
+                  this.sourceAssignments += 1;
+                  this.sourceValue = source;
+                },
+              });
+              elements.set(id, value);
+              return value;
+            }
+            global.document = {
+              getElementById(id) { return elements.get(id) || element(id); },
+            };
+            global.setTimeout = callback => queueMicrotask(callback);
+            let intervalCallback;
+            global.setInterval = callback => { intervalCallback = callback; };
+
+            function response(value) {
+              return {ok: true, status: 200, async json() { return value; }};
+            }
+            let statusCalls = 0;
+            global.fetch = path => {
+              assert.equal(path, "/api/status");
+              statusCalls += 1;
+              return Promise.resolve(response({
+                running: statusCalls === 1,
+                saved_count: statusCalls === 1 ? 2 : 3,
+                failed_count: statusCalls === 1 ? 4 : 5,
+                latest_file: null,
+                last_error: statusCalls === 1 ? null : "连续 5 张采集失败",
+              }));
+            };
+            """
+        )
+        assertions = textwrap.dedent(
+            """
+            async function drain() {
+              await new Promise(resolve => setImmediate(resolve));
+              await new Promise(resolve => setImmediate(resolve));
+            }
+            (async () => {
+              const previewElement = elements.get("preview");
+              await drain();
+              assert.equal(previewElement.src, undefined);
+              assert.equal(previewElement.sourceAssignments, 0);
+
+              await intervalCallback();
+              await drain();
+              assert.match(
+                previewElement.src,
+                /^http:\\/\\/192\\.168\\.4\\.1:81\\/stream\\?t=/,
+              );
+              assert.equal(previewElement.sourceAssignments, 1);
+
+              await intervalCallback();
+              await drain();
+              assert.equal(previewElement.sourceAssignments, 1);
+            })().catch(error => {
+              console.error(error);
+              process.exitCode = 1;
+            });
+            """
+        )
+
+        completed = subprocess.run(
+            ["node"],
+            input=harness + script + assertions,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
     def test_status_start_and_stop_return_json_state(self):
         status, content_type, cache_control, body = self.request("GET", "/api/status")
         self.assertEqual(200, status)
@@ -361,6 +463,10 @@ class DatasetCaptureServerTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8000", readme)
         self.assertIn("data/<数据集名称>/", readme)
         self.assertIn("停止并保存", readme)
+        self.assertIn("开始采集前，页面显示来自 ESP32 的 MJPEG 预览", readme)
+        self.assertIn("连续采集期间会断开预览", readme)
+        self.assertIn("手动停止或任务自动终止后", readme)
+        self.assertIn("页面会重新连接预览", readme)
         self.assertNotIn("automatic refresh", readme)
 
 
