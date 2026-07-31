@@ -9,6 +9,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dataset_capture import (
+    CaptureAlreadyRunningError,
+    CaptureManager,
     DatasetWriter,
     Esp32Client,
     Frame,
@@ -19,6 +21,32 @@ from dataset_capture import (
 
 
 JPEG = b"\xff\xd8frame\xff\xd9"
+
+
+def wait_until(test_case, predicate, timeout_seconds=2.0):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    test_case.fail("condition was not reached before timeout")
+
+
+class FakeClient:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+        self.wait_calls = 0
+        self.capture_calls = 0
+
+    def wait_for_stream_release(self, timeout_seconds=3.0):
+        self.wait_calls += 1
+
+    def capture(self):
+        self.capture_calls += 1
+        outcome = next(self.outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 class Esp32Handler(BaseHTTPRequestHandler):
@@ -171,3 +199,78 @@ class Esp32ClientTest(unittest.TestCase):
             client.wait_for_stream_release(timeout_seconds=0.05)
 
         self.assertLess(time.monotonic() - started_at, 0.15)
+
+
+class CaptureManagerTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.data_root = Path(self.temporary_directory.name) / "data"
+        self.frame = Frame(JPEG, "http://device/capture", datetime.now(timezone.utc))
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
+
+    def test_start_saves_frames_and_stop_returns_final_state(self):
+        client = FakeClient([self.frame, self.frame])
+        manager = CaptureManager(self.data_root, client)
+
+        manager.start("wet", 200)
+        wait_until(self, lambda: manager.snapshot()["saved_count"] == 2)
+        state = manager.stop()
+
+        self.assertFalse(state["running"])
+        self.assertEqual(2, state["saved_count"])
+        self.assertEqual(1, client.wait_calls)
+
+    def test_start_rejects_a_second_worker(self):
+        client = FakeClient([self.frame])
+        manager = CaptureManager(self.data_root, client)
+
+        manager.start("wet", 200)
+        with self.assertRaises(CaptureAlreadyRunningError):
+            manager.start("wet", 200)
+        manager.stop()
+
+    def test_worker_retries_three_times_before_recording_one_failure(self):
+        client = FakeClient([OSError("offline")] * 3 + [self.frame])
+        manager = CaptureManager(self.data_root, client)
+
+        manager.start("wet", 200)
+        wait_until(self, lambda: manager.snapshot()["saved_count"] == 1)
+        state = manager.stop()
+
+        self.assertEqual(1, state["failed_count"])
+        self.assertEqual(1, state["saved_count"])
+        self.assertEqual(4, client.capture_calls)
+
+    def test_worker_stops_after_five_consecutive_failed_frames(self):
+        client = FakeClient([OSError("offline")] * 15)
+        manager = CaptureManager(self.data_root, client)
+
+        manager.start("wet", 200)
+        wait_until(self, lambda: not manager.snapshot()["running"], timeout_seconds=6.0)
+        state = manager.snapshot()
+
+        self.assertEqual(5, state["failed_count"])
+        self.assertEqual(0, state["saved_count"])
+        self.assertIn("连续 5 张采集失败", state["last_error"])
+
+    def test_start_rejects_out_of_range_intervals_before_creating_dataset(self):
+        manager = CaptureManager(self.data_root, FakeClient([]))
+
+        for interval_ms in (199, 60_001):
+            with self.subTest(interval_ms=interval_ms):
+                with self.assertRaises(ValueError):
+                    manager.start("wet", interval_ms)
+                self.assertFalse((self.data_root / "wet").exists())
+
+    def test_shutdown_interrupts_wait_without_another_capture(self):
+        client = FakeClient([self.frame, self.frame])
+        manager = CaptureManager(self.data_root, client)
+
+        manager.start("wet", 60_000)
+        wait_until(self, lambda: manager.snapshot()["saved_count"] == 1)
+        manager.shutdown()
+
+        self.assertFalse(manager.snapshot()["running"])
+        self.assertEqual(1, client.capture_calls)

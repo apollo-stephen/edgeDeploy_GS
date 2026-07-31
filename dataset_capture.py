@@ -228,3 +228,112 @@ class Esp32Client:
             source_url=capture_url,
             captured_at=datetime.now().astimezone(),
         )
+
+
+class CaptureAlreadyRunningError(RuntimeError):
+    pass
+
+
+class CaptureManager:
+    def __init__(self, data_root: Path, client: Esp32Client) -> None:
+        self._data_root = data_root
+        self._client = client
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._worker: threading.Thread | None = None
+        self._state = {
+            "running": False,
+            "dataset_name": None,
+            "interval_ms": DEFAULT_INTERVAL_MS,
+            "saved_count": 0,
+            "failed_count": 0,
+            "latest_file": None,
+            "last_error": None,
+        }
+
+    def start(self, dataset_name: str, interval_ms: int) -> dict[str, object]:
+        if not MIN_INTERVAL_MS <= interval_ms <= MAX_INTERVAL_MS:
+            raise ValueError(
+                f"Capture interval must be between {MIN_INTERVAL_MS} and {MAX_INTERVAL_MS} ms"
+            )
+        dataset_name = normalize_dataset_name(dataset_name)
+
+        with self._lock:
+            if self._state["running"]:
+                raise CaptureAlreadyRunningError("Dataset capture is already running")
+            writer = DatasetWriter(self._data_root, dataset_name)
+            self._stop_event.clear()
+            self._state = {
+                "running": True,
+                "dataset_name": dataset_name,
+                "interval_ms": interval_ms,
+                "saved_count": 0,
+                "failed_count": 0,
+                "latest_file": None,
+                "last_error": None,
+            }
+            self._worker = threading.Thread(
+                target=self._run,
+                args=(writer, interval_ms),
+                name="dataset-capture",
+                daemon=True,
+            )
+            self._worker.start()
+            return dict(self._state)
+
+    def _run(self, writer: DatasetWriter, interval_ms: int) -> None:
+        consecutive_failures = 0
+        try:
+            self._client.wait_for_stream_release(3.0)
+            while not self._stop_event.is_set():
+                last_error = None
+                for attempt in range(FRAME_RETRIES + 1):
+                    if self._stop_event.is_set():
+                        return
+                    try:
+                        destination = writer.save(self._client.capture())
+                    except Exception as error:
+                        last_error = error
+                        if attempt < FRAME_RETRIES and self._stop_event.wait(RETRY_DELAY_SECONDS):
+                            return
+                    else:
+                        consecutive_failures = 0
+                        with self._lock:
+                            self._state["saved_count"] += 1
+                            self._state["latest_file"] = str(destination)
+                            self._state["last_error"] = None
+                        if self._stop_event.wait(interval_ms / 1000):
+                            return
+                        break
+                else:
+                    consecutive_failures += 1
+                    with self._lock:
+                        self._state["failed_count"] += 1
+                        self._state["last_error"] = f"采集失败: {last_error}"
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        with self._lock:
+                            self._state["last_error"] = (
+                                f"连续 {MAX_CONSECUTIVE_FAILURES} 张采集失败: {last_error}"
+                            )
+                        return
+        except Exception as error:
+            with self._lock:
+                self._state["last_error"] = f"采集失败: {error}"
+        finally:
+            with self._lock:
+                self._state["running"] = False
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return dict(self._state)
+
+    def stop(self) -> dict[str, object]:
+        self._stop_event.set()
+        with self._lock:
+            worker = self._worker
+        if worker is not None and worker is not threading.current_thread():
+            worker.join()
+        return self.snapshot()
+
+    def shutdown(self) -> None:
+        self.stop()
