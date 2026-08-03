@@ -2,3 +2,9 @@
 # exceed the component's width * height / 5 automatic estimate.
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM=y
 CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE=8192
+
+# The generated model and Edge Impulse SDK no longer fit the default 1 MB app
+# partition. The board is configured with 16 MB flash, so reserve 4 MB for the
+# factory firmware image.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
