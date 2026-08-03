@@ -8,6 +8,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InferenceComponentBehaviorTest(unittest.TestCase):
+    def test_build_defaults_enable_external_ram_for_model_arena(self):
+        defaults_path = ROOT / "sdkconfig.defaults"
+        values = {}
+        for line in defaults_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("CONFIG_") and "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+
+        self.assertEqual('"16MB"', values.get("CONFIG_ESPTOOLPY_FLASHSIZE"))
+        self.assertEqual("y", values.get("CONFIG_SPIRAM"))
+        self.assertEqual("y", values.get("CONFIG_SPIRAM_MODE_OCT"))
+        self.assertEqual("y", values.get("CONFIG_SPIRAM_USE_MALLOC"))
+        self.assertEqual(
+            "16384",
+            values.get("CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL"),
+        )
+
     def test_task_lifecycle_frame_ownership_and_classifier_bridge(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             executable = Path(temporary_directory) / "inference_component_test"

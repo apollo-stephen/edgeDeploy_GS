@@ -1,15 +1,14 @@
-# EdgeDeploy GS: OV5640 HTTP Image Transfer
+# EdgeDeploy GS: OV5640 Capture and Edge Inference
 
-This ESP32-S3 firmware initializes an OV5640 camera and serves native 128x128
-MJPEG and single-frame JPEG capture over the board's SoftAP.
-
-This branch intentionally does not include model inference, resizing, or LCD
-output.
+This ESP32-S3 firmware initializes an OV5640 camera, serves native 128x128
+MJPEG and single-frame JPEG capture over the board's SoftAP, and runs the
+exported Edge Impulse image classifier in a periodic FreeRTOS task.
 
 ## Requirements
 
 - ESP-IDF 5.5.4
 - ESP32-S3 target
+- 16 MB flash and Octal PSRAM
 - OV5640 wired to the board pinout used by this project
 - `espressif/esp32-camera` 2.1.7, resolved through ESP-IDF Component Manager
 
@@ -30,6 +29,42 @@ The firmware requests:
 The serial log reports the detected sensor PID. Every HTTP response is also
 validated against the actual `camera_fb_t` format, width, height, buffer, and
 length.
+
+## Edge Impulse inference
+
+After the camera, SoftAP, and HTTP server start, one `ei_inference` FreeRTOS
+task runs an inference every two seconds. It uses the CAMERA component's shared
+frame-ownership API, so HTTP capture and inference cannot hold the same camera
+frame concurrently.
+
+Each iteration:
+
+1. Acquires a 128x128 JPEG frame with a 250 ms timeout.
+2. Decodes the frame into a 49,152-byte RGB888 buffer in PSRAM.
+3. Releases the camera frame before running the classifier.
+4. Converts RGB pixels to the Edge Impulse signal format and runs the INT8 EON
+   model.
+5. Logs DSP/classification timing and probabilities for `harmful`,
+   `recycleable`, and `wet`.
+
+The exported model label is spelled `recycleable`; logs preserve that exact
+model label. If the highest probability is below the exported threshold of
+0.60, the reported prediction is `uncertain`.
+
+Example serial output:
+
+```text
+I (...) inference: Timing: DSP 4 ms, classification 120 ms, anomaly 0 ms
+I (...) inference: harmful: 0.01234
+I (...) inference: recycleable: 0.90123
+I (...) inference: wet: 0.08643
+I (...) inference: Prediction: recycleable (0.90123)
+```
+
+The model allocates a roughly 346 KB tensor arena. `sdkconfig.defaults` enables
+Octal PSRAM and routes large heap allocations there. The application uses a
+custom 4 MB factory partition because the Edge Impulse SDK and generated model
+do not fit the default 1 MB application partition.
 
 ## Configure the SoftAP
 
@@ -54,7 +89,8 @@ idf.py -p /dev/cu.YOUR_PORT flash monitor
 
 Exit the serial monitor with `Ctrl-]`.
 
-Successful startup prints the detected camera PID, SoftAP address, and:
+Successful startup prints the detected camera PID, SoftAP address, inference
+task status, and:
 
 ```text
 Image preview ready at http://192.168.4.1/
@@ -120,8 +156,10 @@ python3 dataset_capture_server.py
 
 A successful build proves only that the current source compiles. Complete
 hardware acceptance still requires serial confirmation that the OV5640 was
-detected, a browser-visible image, an actual 128x128 JPEG response, and stable
-repeated capture without crashes or exhausted frame buffers.
+detected, the inference task started, all three probabilities appear every two
+seconds, a known sample produces the expected class, the HTTP preview remains
+usable during inference, and repeated operation does not exhaust heap, PSRAM,
+or frame buffers.
 
 Run host-side behavior and regression tests with:
 
