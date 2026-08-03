@@ -30,8 +30,16 @@
 #define CAMERA_FRAME_HEIGHT 128
 #define CAMERA_JPEG_QUALITY 12
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 esp_err_t camera_init(void);
 camera_fb_t *camera_capture_frame(uint32_t timeout_ms);
 void camera_release_frame(camera_fb_t *frame);
 bool camera_is_ready(void);
 const char *camera_frame_size_name(void);
+
+#ifdef __cplusplus
+}
+#endif
