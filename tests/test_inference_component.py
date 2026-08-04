@@ -8,6 +8,33 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InferenceComponentBehaviorTest(unittest.TestCase):
+    def test_esp_nn_overflow_capacity_override_reaches_generated_model(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            executable = Path(temporary_directory) / "esp_nn_overflow_config_test"
+            result = subprocess.run(
+                [
+                    "c++",
+                    "-std=c++17",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "modev1"),
+                    str(ROOT / "tests/host/esp_nn_overflow_config_test.cpp"),
+                    "-o",
+                    str(executable),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=result.stdout + result.stderr,
+            )
+
     def test_bundled_esp_nn_sources_are_discovered(self):
         result = subprocess.run(
             [

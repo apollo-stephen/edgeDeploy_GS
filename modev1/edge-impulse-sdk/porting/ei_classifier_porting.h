@@ -364,13 +364,13 @@ void ei_free(void *ptr);
 // End load porting layer depending on target
 
 // Additional configuration for specific architecture for Armv8.1-M architecture ie CM55 and CM85
-#if defined (__ARM_ARCH ) && (__ARM_ARCH >= 8)
+#if defined (__ARM_ARCH ) && (__ARM_ARCH >= 8) && !defined(EI_MAX_OVERFLOW_BUFFER_COUNT)
 
 #define EI_MAX_OVERFLOW_BUFFER_COUNT	50
 
 #endif
 
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(EI_MAX_OVERFLOW_BUFFER_COUNT)
 #define EI_MAX_OVERFLOW_BUFFER_COUNT	30
 #endif
 

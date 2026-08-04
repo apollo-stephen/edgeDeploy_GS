@@ -40,11 +40,18 @@ list(FIND EI_ESP_NN_COMPILE_DEFINITIONS
     "EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN_S3=1"
     ESP_NN_S3_DEFINE_INDEX
 )
+list(FIND EI_ESP_NN_COMPILE_DEFINITIONS
+    "EI_MAX_OVERFLOW_BUFFER_COUNT=256"
+    ESP_NN_OVERFLOW_DEFINE_INDEX
+)
 if(ESP_NN_DEFINE_INDEX EQUAL -1)
     message(FATAL_ERROR "ESP-NN compile definition is not enabled")
 endif()
 if(ESP_NN_S3_DEFINE_INDEX EQUAL -1)
     message(FATAL_ERROR "ESP32-S3 ESP-NN compile definition is not enabled")
+endif()
+if(ESP_NN_OVERFLOW_DEFINE_INDEX EQUAL -1)
+    message(FATAL_ERROR "ESP-NN overflow buffer capacity is not configured")
 endif()
 
 foreach(SOURCE_FILE IN LISTS EI_ESP_NN_C_SOURCES EI_ESP_NN_ASM_SOURCES)
