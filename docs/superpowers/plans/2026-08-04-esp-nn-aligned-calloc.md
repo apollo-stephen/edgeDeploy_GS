@@ -25,6 +25,7 @@
 - Create: `tests/host/include/esp_idf_version.h`
 - Create: `tests/host/ei_classifier_porting_test.cpp`
 - Modify: `tests/host/include/esp_heap_caps.h`
+- Modify: `tests/host/include/esp_timer.h`
 - Modify: `tests/host/include/freertos/FreeRTOS.h`
 - Modify: `tests/test_inference_component.py`
 - Modify: `modev1/edge-impulse-sdk/porting/espressif/ei_classifier_porting.cpp:111-115`
@@ -48,7 +49,7 @@ Create `tests/host/include/esp_idf_version.h`:
 Extend `tests/host/include/esp_heap_caps.h` with `#include <stdint.h>`, `MALLOC_CAP_DEFAULT`, and these declarations inside its existing `extern "C"` block:
 
 ```c
-#define MALLOC_CAP_DEFAULT 0x000
+#define MALLOC_CAP_DEFAULT (1U << 12)
 
 void *heap_caps_aligned_alloc(size_t alignment,
                               size_t size,
@@ -67,6 +68,9 @@ Add the IDF 5 timing compatibility constant to `tests/host/include/freertos/Free
 ```c
 #define portTICK_PERIOD_MS 1
 ```
+
+Wrap the declaration in `tests/host/include/esp_timer.h` in an `extern "C"`
+block when compiling as C++ so the host double matches ESP-IDF linkage.
 
 - [ ] **Step 2: Write the real-porting-layer regression harness**
 
@@ -108,6 +112,7 @@ Add `test_esp32s3_calloc_uses_aligned_zeroed_allocator()` to `tests/test_inferen
     "-Wall",
     "-Wextra",
     "-Werror",
+    "-Wno-format-security",
     "-DCONFIG_IDF_TARGET_ESP32S3=1",
     "-I",
     str(ROOT / "tests/host/include"),

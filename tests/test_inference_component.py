@@ -8,6 +8,58 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InferenceComponentBehaviorTest(unittest.TestCase):
+    def test_esp32s3_calloc_uses_aligned_zeroed_allocator(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            executable = Path(temporary_directory) / "ei_classifier_porting_test"
+            compile_result = subprocess.run(
+                [
+                    "c++",
+                    "-std=c++17",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-Wno-format-security",
+                    "-DCONFIG_IDF_TARGET_ESP32S3=1",
+                    "-I",
+                    str(ROOT / "tests/host/include"),
+                    "-I",
+                    str(ROOT / "modev1"),
+                    str(ROOT / "tests/host/ei_classifier_porting_test.cpp"),
+                    str(
+                        ROOT
+                        / "modev1/edge-impulse-sdk/porting/espressif/ei_classifier_porting.cpp"
+                    ),
+                    "-o",
+                    str(executable),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                compile_result.returncode,
+                msg=compile_result.stdout + compile_result.stderr,
+            )
+
+            run_result = subprocess.run(
+                [str(executable)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                run_result.returncode,
+                msg=run_result.stdout + run_result.stderr,
+            )
+            self.assertIn(
+                "ei calloc alignment behavior passed",
+                run_result.stdout,
+            )
+
     def test_esp_nn_overflow_capacity_override_reaches_generated_model(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             executable = Path(temporary_directory) / "esp_nn_overflow_config_test"
