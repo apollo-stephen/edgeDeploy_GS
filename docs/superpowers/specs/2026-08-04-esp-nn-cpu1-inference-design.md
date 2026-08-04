@@ -11,6 +11,15 @@ The Edge Impulse export contains an ESP32-S3 ESP-NN implementation, but the
 current model component explicitly disables it and compiles only C++ sources.
 The bundled ESP-NN C and assembly sources therefore never enter the firmware.
 
+After enabling ESP-NN, hardware testing exposed two generated-runtime memory
+assumptions. First, this 52-convolution model exhausts the ESP32-S3 default of
+30 overflow-buffer bookkeeping slots during setup. Second, overflow buffers
+are allocated through `ei_calloc()`, whose ESP-IDF 5 path uses ordinary
+`heap_caps_calloc()`. A captured scratch-buffer address ended in `0x14`, proving
+four-byte rather than the 16-byte alignment required by the ESP32-S3 optimized
+kernels. Inference then corrupts adjacent heap metadata and crashes while
+`model_reset()` frees the buffer.
+
 ## Chosen Approach
 
 Use the ESP-NN copy included in the exported Edge Impulse SDK. Compile its C
@@ -51,19 +60,48 @@ ownership, and watchdog configuration remain unchanged.
 CPU affinity is isolation rather than the primary performance fix. ESP-NN is
 responsible for replacing the reference convolution path.
 
+## ESP-NN Memory Safety
+
+The model component will set `EI_MAX_OVERFLOW_BUFFER_COUNT=256`. This expands
+only the generated runtime's pointer bookkeeping table (1024 bytes on
+ESP32-S3); overflow buffers themselves remain demand-allocated. The Edge
+Impulse porting header will honor a project-provided value instead of replacing
+it with the SDK default of 30.
+
+For ESP32-S3 on ESP-IDF 5.x, `ei_calloc()` will call
+`heap_caps_aligned_calloc(16, nitems, size, MALLOC_CAP_DEFAULT)`. This preserves
+calloc's zero-initialization and the existing internal-versus-PSRAM allocation
+policy while guaranteeing the alignment expected by ESP-NN. The matching
+`ei_free()` remains valid because ESP-IDF permits aligned capability-heap
+allocations to be released through the normal heap free path.
+
+Alternatives rejected for the alignment fix:
+
+1. Calling `ei_malloc()` followed by `memset()` duplicates the aligned-calloc
+   behavior already provided by ESP-IDF 5.5.4.
+2. Disabling ESP-NN avoids the scratch-buffer path but restores the original
+   reference-kernel latency and watchdog starvation.
+3. Deferring or skipping `model_reset()` would hide the heap corruption and
+   leak all model allocations after each inference.
+
 ## Testing and Acceptance
 
 Host behavior tests will verify that task creation requests CPU1 and preserves
 failure rollback. A CMake discovery test will execute the Edge Impulse source
 collector and verify that the bundled ESP-NN set contains both C and S3
-assembly implementations.
+assembly implementations. A porting-layer host test will compile the real
+Espressif implementation against a controlled heap API and verify that
+`ei_calloc()` selects the 16-byte aligned, zero-initializing allocator rather
+than ordinary `heap_caps_calloc()`.
 
 A clean ESP-IDF 5.5.4 build must compile ESP-NN C and `.S` files, link without
 undefined ESP-NN symbols, and fit the configured four-megabyte application
 partition. Existing host tests must remain green.
 
-Final performance acceptance is hardware-only: after flashing, serial output
-must show classification below the five-second watchdog interval and no
-`IDLE0` or `IDLE1` task-watchdog warnings during repeated inference. If the
-accelerated model still exceeds five seconds, watchdog policy or model size
-will be considered only after measuring the accelerated runtime.
+Final performance and memory-safety acceptance is hardware-only: after
+flashing, model setup and reset must complete without overflow-allocation
+errors, heap corruption, or `StoreProhibited`; serial output must show
+classification below the five-second watchdog interval and no `IDLE0` or
+`IDLE1` task-watchdog warnings during repeated inference. If the accelerated
+model still exceeds five seconds, watchdog policy or model size will be
+considered only after measuring the accelerated runtime.
