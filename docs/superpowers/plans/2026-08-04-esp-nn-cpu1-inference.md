@@ -29,13 +29,13 @@
 - Consumes: ESP-IDF `xTaskCreatePinnedToCore(TaskFunction_t, const char *, configSTACK_DEPTH_TYPE, void *, UBaseType_t, TaskHandle_t *, BaseType_t)`.
 - Produces: one `ei_inference` task created with core ID `1` and the existing lifecycle behavior.
 
-- [ ] **Step 1: Write the failing host behavior test**
+- [x] **Step 1: Write the failing host behavior test**
 
 Replace the host task double with `xTaskCreatePinnedToCore`, capture its
 `core_id`, and assert in `verify_start_success()` that the value is exactly
 `1`. Keep the existing name, stack, priority, and failure assertions.
 
-- [ ] **Step 2: Run the targeted test and verify RED**
+- [x] **Step 2: Run the targeted test and verify RED**
 
 Run:
 
@@ -45,7 +45,7 @@ python3 -m unittest tests.test_inference_component.InferenceComponentBehaviorTes
 
 Expected: compilation fails because `inference.cpp` still calls `xTaskCreate`.
 
-- [ ] **Step 3: Implement CPU1 task affinity**
+- [x] **Step 3: Implement CPU1 task affinity**
 
 Change `inference_start()` to call:
 
@@ -59,7 +59,7 @@ xTaskCreatePinnedToCore(inference_task,
                         1);
 ```
 
-- [ ] **Step 4: Run the targeted test and verify GREEN**
+- [x] **Step 4: Run the targeted test and verify GREEN**
 
 Run the command from Step 2. Expected: pass for every existing lifecycle and inference scenario.
 
@@ -77,7 +77,7 @@ Run the command from Step 2. Expected: pass for every existing lifecycle and inf
 - Consumes: `RECURSIVE_FIND_FILE` from `edge-impulse-sdk/cmake/utils.cmake` and the bundled `ESP-NN/src` tree.
 - Produces: `EI_ESP_NN_C_SOURCES` and `EI_ESP_NN_ASM_SOURCES`, both passed to `idf_component_register`; Edge Impulse target detection defines ESP-NN for ESP32-S3.
 
-- [ ] **Step 1: Write the failing source-discovery test**
+- [x] **Step 1: Write the failing source-discovery test**
 
 Add a Python test that executes:
 
@@ -90,7 +90,7 @@ finds at least one `.c` file, at least one `.S` file, the S3 convolution
 implementation, and the common S3 assembly implementation. It also rejects any
 source outside the bundled `porting/espressif/ESP-NN` directory.
 
-- [ ] **Step 2: Run the source-discovery test and verify RED**
+- [x] **Step 2: Run the source-discovery test and verify RED**
 
 Run:
 
@@ -100,19 +100,20 @@ python3 -m unittest tests.test_inference_component.InferenceComponentBehaviorTes
 
 Expected: fail because `modev1/esp_nn_sources.cmake` does not exist.
 
-- [ ] **Step 3: Implement the ESP-NN source collector and component integration**
+- [x] **Step 3: Implement the ESP-NN source collector and component integration**
 
 Create `modev1/esp_nn_sources.cmake` to collect `*.c` and `*.S` beneath the
 bundled ESP-NN directory. Include it from `modev1/CMakeLists.txt`, append both
-lists to `SRCS`, and remove the explicit
-`EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=0` definition. Keep
+lists to `SRCS`, and replace the disabled definition with explicit
+`EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=1` and
+`EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN_S3=1` definitions. Keep
 `EIDSP_USE_ESP_DSP=0` and the third-party GCC warning exception unchanged.
 
-- [ ] **Step 4: Run the targeted source-discovery test and verify GREEN**
+- [x] **Step 4: Run the targeted source-discovery test and verify GREEN**
 
 Run the command from Step 2. Expected: pass.
 
-- [ ] **Step 5: Run the entire host suite**
+- [x] **Step 5: Run the entire host suite**
 
 Run:
 
@@ -122,7 +123,7 @@ python3 -m unittest discover -s tests -v
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Run a clean ESP-IDF build**
+- [x] **Step 6: Run a clean ESP-IDF build**
 
 Activate ESP-IDF 5.5.4 and build from a new temporary build directory and a
 blank temporary `sdkconfig`. Expected: ESP-NN `.c` and `.S` compilation is

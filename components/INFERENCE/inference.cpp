@@ -17,6 +17,7 @@ constexpr uint32_t kCaptureTimeoutMs = 250;
 constexpr uint32_t kInferencePeriodMs = 2000;
 constexpr configSTACK_DEPTH_TYPE kTaskStackBytes = 8192;
 constexpr UBaseType_t kTaskPriority = 5;
+constexpr BaseType_t kTaskCoreId = 1;
 constexpr size_t kRgbBufferBytes =
     EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3U;
 
@@ -118,12 +119,13 @@ extern "C" esp_err_t inference_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    const BaseType_t task_result = xTaskCreate(inference_task,
-                                               "ei_inference",
-                                               kTaskStackBytes,
-                                               nullptr,
-                                               kTaskPriority,
-                                               nullptr);
+    const BaseType_t task_result = xTaskCreatePinnedToCore(inference_task,
+                                                           "ei_inference",
+                                                           kTaskStackBytes,
+                                                           nullptr,
+                                                           kTaskPriority,
+                                                           nullptr,
+                                                           kTaskCoreId);
     if (task_result != pdPASS) {
         heap_caps_free(s_rgb_buffer);
         s_rgb_buffer = nullptr;

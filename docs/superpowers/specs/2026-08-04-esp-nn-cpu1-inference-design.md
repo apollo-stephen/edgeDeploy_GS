@@ -33,11 +33,13 @@ runtime and generated model. It will additionally collect only `.c` and `.S`
 files beneath `edge-impulse-sdk/porting/espressif/ESP-NN`. It will not restore
 the unrelated CMSIS source set.
 
-The explicit `EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=0` override will be removed.
-The Edge Impulse configuration detects `CONFIG_IDF_TARGET_ESP32S3`, enables
-ESP-NN, and selects the S3 assembly paths. `EIDSP_USE_ESP_DSP=0` remains
-unchanged because this image impulse does not require the separate ESP-DSP
-integration.
+The explicit `EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=0` override will be replaced
+with `EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=1` and
+`EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN_S3=1`. These definitions are explicit
+because the bundled source guards are evaluated before ESP-IDF's target
+configuration is included in some translation units. `EIDSP_USE_ESP_DSP=0`
+remains unchanged because this image impulse does not require the separate
+ESP-DSP integration.
 
 ## Task Placement
 

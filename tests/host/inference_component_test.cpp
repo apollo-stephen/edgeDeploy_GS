@@ -37,6 +37,7 @@ static BaseType_t s_task_result = pdPASS;
 static int s_task_create_calls;
 static uint32_t s_task_stack_depth;
 static UBaseType_t s_task_priority;
+static BaseType_t s_task_core_id = -1;
 static int s_classifier_calls;
 static EI_IMPULSE_ERROR s_classifier_result = EI_IMPULSE_OK;
 static float s_scores[EI_CLASSIFIER_LABEL_COUNT] = {0.05f, 0.90f, 0.05f};
@@ -102,12 +103,13 @@ extern "C" void heap_caps_free(void *pointer)
     free(pointer);
 }
 
-extern "C" BaseType_t xTaskCreate(TaskFunction_t task,
-                                   const char *name,
-                                   configSTACK_DEPTH_TYPE stack_depth,
-                                   void *argument,
-                                   UBaseType_t priority,
-                                   TaskHandle_t *task_handle)
+extern "C" BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task,
+                                               const char *name,
+                                               configSTACK_DEPTH_TYPE stack_depth,
+                                               void *argument,
+                                               UBaseType_t priority,
+                                               TaskHandle_t *task_handle,
+                                               BaseType_t core_id)
 {
     assert(task != nullptr);
     assert(strcmp(name, "ei_inference") == 0);
@@ -116,6 +118,7 @@ extern "C" BaseType_t xTaskCreate(TaskFunction_t task,
     ++s_task_create_calls;
     s_task_stack_depth = stack_depth;
     s_task_priority = priority;
+    s_task_core_id = core_id;
     return s_task_result;
 }
 
@@ -175,6 +178,7 @@ static void verify_start_success(void)
     assert(s_task_create_calls == 1);
     assert(s_task_stack_depth == 8192);
     assert(s_task_priority == 5);
+    assert(s_task_core_id == 1);
     assert((s_allocation_caps & MALLOC_CAP_SPIRAM) != 0);
     assert((s_allocation_caps & MALLOC_CAP_8BIT) != 0);
 }

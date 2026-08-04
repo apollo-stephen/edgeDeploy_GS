@@ -33,9 +33,11 @@ length.
 ## Edge Impulse inference
 
 After the camera, SoftAP, and HTTP server start, one `ei_inference` FreeRTOS
-task runs an inference every two seconds. It uses the CAMERA component's shared
-frame-ownership API, so HTTP capture and inference cannot hold the same camera
-frame concurrently.
+task pinned to CPU1 runs an inference every two seconds. CPU0 remains available
+for Wi-Fi and HTTP work. The model uses the Edge Impulse export's bundled
+ESP-NN kernels for ESP32-S3 acceleration; no separate Registry component is
+required. The task uses the CAMERA component's shared frame-ownership API, so
+HTTP capture and inference cannot hold the same camera frame concurrently.
 
 Each iteration:
 
@@ -157,9 +159,10 @@ python3 dataset_capture_server.py
 A successful build proves only that the current source compiles. Complete
 hardware acceptance still requires serial confirmation that the OV5640 was
 detected, the inference task started, all three probabilities appear every two
-seconds, a known sample produces the expected class, the HTTP preview remains
-usable during inference, and repeated operation does not exhaust heap, PSRAM,
-or frame buffers.
+seconds, classification completes within the five-second task-watchdog window,
+no `IDLE0` or `IDLE1` watchdog warnings appear, a known sample produces the
+expected class, the HTTP preview remains usable during inference, and repeated
+operation does not exhaust heap, PSRAM, or frame buffers.
 
 Run host-side behavior and regression tests with:
 

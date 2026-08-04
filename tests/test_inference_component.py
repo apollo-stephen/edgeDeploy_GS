@@ -8,6 +8,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InferenceComponentBehaviorTest(unittest.TestCase):
+    def test_bundled_esp_nn_sources_are_discovered(self):
+        result = subprocess.run(
+            [
+                "cmake",
+                "-P",
+                str(ROOT / "tests/cmake/test_esp_nn_sources.cmake"),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            msg=result.stdout + result.stderr,
+        )
+
     def test_build_defaults_enable_external_ram_for_model_arena(self):
         defaults_path = ROOT / "sdkconfig.defaults"
         values = {}
