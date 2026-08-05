@@ -437,8 +437,9 @@ For every problem include symptom/log evidence, backward-traced root cause,
 selected change, rejected alternatives, why the selected change fixes the
 cause, and regression/hardware verification. Record measured DSP `26 ms`,
 classification `289–290 ms`, the prior `13.6 s`, approximately `47x`
-classification acceleration, probabilities summing to one, and threshold
-behavior (`0.54688` becomes `uncertain` under threshold `0.60`).
+classification acceleration, probabilities summing approximately to one after
+INT8 quantization, and threshold behavior (`0.54688` becomes `uncertain` under
+threshold `0.60`).
 
 The final roadmap order is:
 

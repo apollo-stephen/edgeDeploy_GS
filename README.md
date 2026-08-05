@@ -48,6 +48,8 @@ Each iteration:
    model.
 5. Logs DSP/classification timing and probabilities for `harmful`,
    `recycleable`, and `wet`.
+6. Publishes the exact classified JPEG and versioned result metadata for the
+   local dashboard.
 
 The exported model label is spelled `recycleable`; logs preserve that exact
 model label. If the highest probability is below the exported threshold of
@@ -104,19 +106,28 @@ Image preview ready at http://192.168.4.1/
 2. Losing normal internet access while connected to this standalone AP is
    expected.
 3. Open `http://192.168.4.1/`.
-4. Start the native MJPEG preview to view the live camera feed, or pause the
-   preview when it is not needed. Press **Capture now** to request a separate
-   single JPEG frame.
+4. The left panel shows the native MJPEG live preview. The right panel updates
+   with the exact JPEG used by the latest successful inference, while the
+   result section below shows its prediction, dynamic label scores, timing,
+   sequence, and update age.
+5. Pause the live preview when it is not needed. Press **Capture now** to
+   request a separate single JPEG frame.
 
-The page reports the actual width, height, JPEG byte length, and any HTTP
-failure. It prevents overlapping browser requests; the CAMERA component also
-serializes frame ownership.
+The dashboard polls inference metadata once per second and requests the JPEG by
+sequence. It replaces the displayed image-result pair only after the response
+sequence matches, so a live frame is never mislabeled as the classified frame.
+Transient HTTP or camera failures leave the previous complete pair visible.
+The CAMERA component serializes frame ownership.
 
 Direct endpoints:
 
 - `GET /capture` returns one fresh `image/jpeg`.
 - `GET /api/status` returns camera readiness, capture counters, last JPEG
   length, free heap, and free PSRAM.
+- `GET /api/inference` returns the latest versioned prediction, dynamic scores,
+  timing, JPEG length, and update age, or `{"ready":false}` before first result.
+- `GET /api/inference/image?sequence=N` returns the JPEG for the current
+  inference sequence; stale sequences receive HTTP 409.
 
 For a direct header check:
 
@@ -162,7 +173,9 @@ detected, the inference task started, all three probabilities appear every two
 seconds, classification completes within the five-second task-watchdog window,
 no `IDLE0` or `IDLE1` watchdog warnings appear, a known sample produces the
 expected class, the HTTP preview remains usable during inference, and repeated
-operation does not exhaust heap, PSRAM, or frame buffers.
+operation does not exhaust heap, PSRAM, or frame buffers. For dashboard
+acceptance, the right-hand image and page scores must match serial output for
+the same inference sequence.
 
 Run host-side behavior and regression tests with:
 
