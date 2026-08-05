@@ -26,6 +26,8 @@ constexpr size_t kRgbBufferBytes =
 
 static_assert(EI_CLASSIFIER_LABEL_COUNT <= INFERENCE_MAX_LABELS,
               "Model label count exceeds inference snapshot capacity");
+static_assert(INFERENCE_MAX_JPEG_BYTES == CAMERA_MAX_JPEG_BYTES,
+              "Inference snapshot must match camera JPEG capacity");
 
 const char *const kUncertainLabel = "uncertain";
 const char *const TAG = "inference";

@@ -337,22 +337,22 @@ static esp_err_t send_inference_image_error(httpd_req_t *request,
 static bool parse_inference_sequence(httpd_req_t *request,
                                      uint32_t *sequence)
 {
+    static const char prefix[] = "sequence=";
     char query[48];
-    char value[16];
     const size_t query_length = httpd_req_get_url_query_len(request);
     if (sequence == NULL || query_length == 0U ||
         query_length >= sizeof(query) ||
         httpd_req_get_url_query_str(request,
                                     query,
                                     sizeof(query)) != ESP_OK ||
-        httpd_query_key_value(query,
-                              "sequence",
-                              value,
-                              sizeof(value)) != ESP_OK ||
-        value[0] == '\0') {
+        strncmp(query, prefix, sizeof(prefix) - 1U) != 0) {
         return false;
     }
 
+    const char *value = query + sizeof(prefix) - 1U;
+    if (*value == '\0') {
+        return false;
+    }
     for (const char *cursor = value; *cursor != '\0'; ++cursor) {
         if (*cursor < '0' || *cursor > '9') {
             return false;

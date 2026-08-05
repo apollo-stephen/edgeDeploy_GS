@@ -58,7 +58,9 @@ autonomous inference when no page is open.
 
 The inference component will allocate two JPEG buffers in PSRAM in addition to
 its existing RGB888 buffer. Each JPEG buffer is sized to the camera component's
-explicit 8192-byte native-frame capacity.
+explicit 8192-byte native-frame capacity. The camera driver is configured with
+the same fixed framebuffer limit, and the production build checks the CAMERA,
+sdkconfig, and inference capacities for compile-time consistency.
 
 One buffer is staging storage for the newly captured JPEG. Before releasing the
 camera frame, the inference task validates its length and copies it into the

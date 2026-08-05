@@ -552,6 +552,13 @@ static void verify_preview_page(const httpd_uri_t *index_uri)
     assert(strstr(request.response_body, "URL.createObjectURL") != NULL);
     assert(strstr(request.response_body, "URL.revokeObjectURL") != NULL);
     assert(strstr(request.response_body, "await new Promise") != NULL);
+    const char *decode_candidate =
+        strstr(request.response_body, "const candidateImage=new Image()");
+    const char *commit_visible_image =
+        strstr(request.response_body, "inferenceSnapshot.src=nextUrl");
+    assert(decode_candidate != NULL);
+    assert(commit_visible_image != NULL);
+    assert(decode_candidate < commit_visible_image);
     assert(strstr(request.response_body, ".textContent=") != NULL);
     assert(strstr(request.response_body, "innerHTML") == NULL);
     assert(strstr(request.response_body, "grid-template-columns") != NULL);
@@ -713,6 +720,18 @@ static void verify_inference_image(const httpd_uri_t *image_uri)
 
     request.query_string = "sequence=4294967296";
     assert(image_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    request.query_string = "sequence=12&sequence=13";
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    request.query_string = "sequence=12&extra=1";
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
     assert(strcmp(request.response_status, HTTPD_400) == 0);
     reset_request(&request);
 

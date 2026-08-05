@@ -120,8 +120,8 @@ int main(int argc, char **argv)
             CALL_NVS_INIT,
             CALL_CAMERA_INIT,
             CALL_WIFI_INIT,
-            CALL_HTTP_START,
             CALL_INFERENCE_START,
+            CALL_HTTP_START,
         };
         verify_calls(expected, sizeof(expected) / sizeof(expected[0]));
     } else if (strcmp(scenario, "nvs-recovery") == 0) {
@@ -131,8 +131,8 @@ int main(int argc, char **argv)
             CALL_NVS_INIT,
             CALL_CAMERA_INIT,
             CALL_WIFI_INIT,
-            CALL_HTTP_START,
             CALL_INFERENCE_START,
+            CALL_HTTP_START,
         };
         verify_calls(expected, sizeof(expected) / sizeof(expected[0]));
     } else if (strcmp(scenario, "camera-failure") == 0) {
@@ -153,6 +153,7 @@ int main(int argc, char **argv)
             CALL_NVS_INIT,
             CALL_CAMERA_INIT,
             CALL_WIFI_INIT,
+            CALL_INFERENCE_START,
             CALL_HTTP_START,
         };
         verify_calls(expected, sizeof(expected) / sizeof(expected[0]));
@@ -161,7 +162,6 @@ int main(int argc, char **argv)
             CALL_NVS_INIT,
             CALL_CAMERA_INIT,
             CALL_WIFI_INIT,
-            CALL_HTTP_START,
             CALL_INFERENCE_START,
         };
         verify_calls(expected, sizeof(expected) / sizeof(expected[0]));

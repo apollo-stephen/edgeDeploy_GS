@@ -66,6 +66,13 @@ Prediction: uncertain (0.54688)
 - 8,192 字节推理任务栈；
 - 256 个 EON overflow buffer 指针槽，在 32 位 ESP32-S3 上约 1,024 字节。
 
+JPEG 的 8,192 字节不是对压缩率的猜测：`sdkconfig.defaults` 将
+`CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE` 配置为 8,192，摄像头驱动据此分配并限制
+原生 framebuffer。`CAMERA_MAX_JPEG_BYTES` 把这一限制提升为组件契约，真实
+ESP-IDF 构建还会静态检查 CAMERA、sdkconfig 与 inference 三处容量一致。若高细节
+场景触发驱动溢出，应基于 DRAM/PSRAM 余量整体提高相机和快照容量，而不能只放大
+HTTP 缓冲区。
+
 ## 问题一：模型组件与固件资源配置
 
 ### 现象
@@ -249,6 +256,8 @@ heap_caps_aligned_calloc(16, nitems, size, MALLOC_CAP_DEFAULT)
 7. 不出现 allocation failure、overflow count、heap corruption、
    `StoreProhibited`、Guru Meditation、IDLE0/IDLE1 watchdog；
 8. 长时间运行时 free heap、free PSRAM 和 frame buffer 不持续下降。
+9. 用纹理密集、噪声较高的画面验证 JPEG 不触发 `FB-OVF` 或持续丢帧；若触发，
+   同步调整相机 framebuffer、推理双缓冲和 HTTP 发送缓冲容量后重新验收。
 
 ## 后续重新训练与模型升级清单
 

@@ -29,6 +29,7 @@
 #define CAMERA_FRAME_WIDTH  128
 #define CAMERA_FRAME_HEIGHT 128
 #define CAMERA_JPEG_QUALITY 12
+#define CAMERA_MAX_JPEG_BYTES 8192U
 
 #ifdef __cplusplus
 extern "C" {

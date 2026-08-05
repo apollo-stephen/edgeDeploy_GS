@@ -23,7 +23,8 @@ The firmware requests:
 - `FRAMESIZE_128X128`
 - JPEG quality 12
 - two DRAM frame buffers
-- an explicit 8192-byte JPEG frame-buffer capacity
+- an explicit 8192-byte JPEG frame-buffer capacity, shared as the CAMERA
+  component contract and compile-time checked against inference storage
 - latest-frame acquisition
 
 The serial log reports the detected sensor PID. Every HTTP response is also

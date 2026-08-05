@@ -433,6 +433,7 @@ static void verify_uncertain(void)
 
 int main(int argc, char **argv)
 {
+    static_assert(INFERENCE_MAX_JPEG_BYTES == CAMERA_MAX_JPEG_BYTES);
     assert(argc == 2);
     if (strcmp(argv[1], "success") == 0) {
         verify_success();

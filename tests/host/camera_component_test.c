@@ -165,6 +165,7 @@ static void verify_initialization_failure_cleanup(void)
 
 int main(int argc, char **argv)
 {
+    assert(CAMERA_MAX_JPEG_BYTES == 8192U);
     if (argc == 2 && strcmp(argv[1], "init-failure") == 0) {
         verify_initialization_failure_cleanup();
         puts("camera initialization failure cleanup passed");
