@@ -34,6 +34,8 @@ class HttpCaptureComponentBehaviorTest(unittest.TestCase):
                     str(ROOT / "components/WIFIAP/include"),
                     "-I",
                     str(ROOT / "components/HTTP_CAPTURE/include"),
+                    "-I",
+                    str(ROOT / "components/INFERENCE/include"),
                     str(ROOT / "tests/host/http_capture_component_test.c"),
                     str(ROOT / "components/HTTP_CAPTURE/http_capture.c"),
                     "-o",

@@ -11,6 +11,7 @@
 #include "esp_http_server.h"
 #include "freertos/task.h"
 #include "http_capture.h"
+#include "inference.h"
 #include "wifi_ap.h"
 
 static httpd_uri_t s_uris[2][8];
@@ -43,6 +44,14 @@ static bool s_wait_for_stream_exit_on_stop;
 static bool s_stream_send_started;
 static bool s_stream_stop_called;
 static bool s_stream_handler_finished;
+static bool s_heap_allocate = true;
+static int s_heap_allocations;
+static int s_heap_frees;
+static esp_err_t s_metadata_result = ESP_ERR_NOT_FOUND;
+static esp_err_t s_jpeg_result = ESP_OK;
+static inference_snapshot_metadata_t s_inference_metadata;
+static uint8_t s_inference_jpeg[] = {0xff, 0xd8, 0x44, 0x55, 0xff, 0xd9};
+static uint32_t s_requested_inference_sequence;
 
 static void reset_request(httpd_req_t *request);
 
@@ -180,6 +189,56 @@ esp_err_t httpd_resp_send_err(httpd_req_t *request,
     return httpd_resp_sendstr(request, message);
 }
 
+size_t httpd_req_get_url_query_len(httpd_req_t *request)
+{
+    return request->query_string == NULL ? 0 : strlen(request->query_string);
+}
+
+esp_err_t httpd_req_get_url_query_str(httpd_req_t *request,
+                                      char *buffer,
+                                      size_t buffer_length)
+{
+    if (request->query_string == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    const size_t length = strlen(request->query_string);
+    if (length + 1U > buffer_length) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    memcpy(buffer, request->query_string, length + 1U);
+    return ESP_OK;
+}
+
+esp_err_t httpd_query_key_value(const char *query,
+                                const char *key,
+                                char *value,
+                                size_t value_length)
+{
+    const size_t key_length = strlen(key);
+    const char *cursor = query;
+    while (cursor != NULL && *cursor != '\0') {
+        if (strncmp(cursor, key, key_length) == 0 &&
+            cursor[key_length] == '=') {
+            const char *start = cursor + key_length + 1U;
+            const char *end = strchr(start, '&');
+            const size_t length = end == NULL
+                                      ? strlen(start)
+                                      : (size_t)(end - start);
+            if (length + 1U > value_length) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            memcpy(value, start, length);
+            value[length] = '\0';
+            return ESP_OK;
+        }
+        cursor = strchr(cursor, '&');
+        if (cursor != NULL) {
+            ++cursor;
+        }
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+
 uint32_t esp_get_free_heap_size(void)
 {
     return 123456;
@@ -189,6 +248,22 @@ size_t heap_caps_get_free_size(unsigned int capabilities)
 {
     assert(capabilities == MALLOC_CAP_SPIRAM);
     return 654321;
+}
+
+void *heap_caps_malloc(size_t size, unsigned int capabilities)
+{
+    assert(size == INFERENCE_MAX_JPEG_BYTES);
+    assert((capabilities & MALLOC_CAP_SPIRAM) != 0);
+    assert((capabilities & MALLOC_CAP_8BIT) != 0);
+    ++s_heap_allocations;
+    return s_heap_allocate ? malloc(size) : NULL;
+}
+
+void heap_caps_free(void *pointer)
+{
+    assert(pointer != NULL);
+    ++s_heap_frees;
+    free(pointer);
 }
 
 int64_t esp_timer_get_time(void)
@@ -239,6 +314,35 @@ const char *wifi_ap_get_ip(void)
 
 esp_err_t wifi_ap_init(void)
 {
+    return ESP_OK;
+}
+
+esp_err_t inference_get_latest_metadata(
+    inference_snapshot_metadata_t *metadata)
+{
+    assert(metadata != NULL);
+    if (s_metadata_result != ESP_OK) {
+        return s_metadata_result;
+    }
+    *metadata = s_inference_metadata;
+    return ESP_OK;
+}
+
+esp_err_t inference_copy_latest_jpeg(uint32_t expected_sequence,
+                                     uint8_t *destination,
+                                     size_t capacity,
+                                     size_t *jpeg_bytes)
+{
+    assert(destination != NULL);
+    assert(jpeg_bytes != NULL);
+    assert(capacity == INFERENCE_MAX_JPEG_BYTES);
+    s_requested_inference_sequence = expected_sequence;
+    if (s_jpeg_result != ESP_OK) {
+        return s_jpeg_result;
+    }
+    assert(capacity >= sizeof(s_inference_jpeg));
+    memcpy(destination, s_inference_jpeg, sizeof(s_inference_jpeg));
+    *jpeg_bytes = sizeof(s_inference_jpeg);
     return ESP_OK;
 }
 
@@ -353,13 +457,18 @@ static void verify_failed_rollback_keeps_server_handle(void)
     s_register_calls = 0;
     s_fail_register_call = 1;
     s_fail_control_stop_once = true;
+    const int allocations_before = s_heap_allocations;
+    const int frees_before = s_heap_frees;
 
     assert(http_capture_start() == ESP_FAIL);
     assert(s_server_count == 1);
     assert(s_stop_calls[0] == 1);
+    assert(s_heap_allocations == allocations_before + 1);
+    assert(s_heap_frees == frees_before);
 
     http_capture_stop();
     assert(s_stop_calls[0] == 2);
+    assert(s_heap_frees == frees_before + 1);
 }
 
 static void verify_start_retries_incomplete_stop(void)
@@ -370,8 +479,11 @@ static void verify_start_retries_incomplete_stop(void)
     s_register_calls = 0;
     s_fail_register_call = 0;
     s_fail_control_stop_once = false;
+    const int allocations_before = s_heap_allocations;
+    const int frees_before = s_heap_frees;
 
     assert(http_capture_start() == ESP_OK);
+    assert(s_heap_allocations == allocations_before + 1);
     s_fail_control_stop = true;
     s_fail_stream_stop = true;
     http_capture_stop();
@@ -381,12 +493,15 @@ static void verify_start_retries_incomplete_stop(void)
     assert(http_capture_start() == ESP_FAIL);
     assert(s_stop_calls[0] == 2);
     assert(s_stop_calls[1] == 2);
+    assert(s_heap_allocations == allocations_before + 1);
+    assert(s_heap_frees == frees_before);
 
     s_fail_control_stop = false;
     s_fail_stream_stop = false;
     http_capture_stop();
     assert(s_stop_calls[0] == 3);
     assert(s_stop_calls[1] == 3);
+    assert(s_heap_frees == frees_before + 1);
 }
 
 static const char *find_header(const httpd_req_t *request, const char *name)
@@ -505,12 +620,127 @@ static void verify_status(const httpd_uri_t *status_uri)
     reset_request(&request);
 }
 
+static void prepare_inference_metadata(void)
+{
+    memset(&s_inference_metadata, 0, sizeof(s_inference_metadata));
+    s_inference_metadata.ready = true;
+    s_inference_metadata.sequence = 12;
+    strcpy(s_inference_metadata.prediction, "recycleable");
+    s_inference_metadata.confidence = 0.90234f;
+    s_inference_metadata.label_count = 3;
+    strcpy(s_inference_metadata.scores[0].label, "harmful");
+    s_inference_metadata.scores[0].value = 0.02344f;
+    strcpy(s_inference_metadata.scores[1].label, "recycleable");
+    s_inference_metadata.scores[1].value = 0.90234f;
+    strcpy(s_inference_metadata.scores[2].label, "wet\"\\\n");
+    s_inference_metadata.scores[2].value = 0.07422f;
+    s_inference_metadata.timing.dsp_ms = 26;
+    s_inference_metadata.timing.classification_ms = 289;
+    s_inference_metadata.timing.anomaly_ms = 0;
+    s_inference_metadata.published_ms = 52825;
+    s_inference_metadata.jpeg_bytes = sizeof(s_inference_jpeg);
+}
+
+static void verify_inference_metadata(const httpd_uri_t *metadata_uri)
+{
+    httpd_req_t request = {0};
+    s_metadata_result = ESP_ERR_NOT_FOUND;
+    assert(metadata_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_type, "application/json") == 0);
+    assert(strcmp(request.response_body, "{\"ready\":false}") == 0);
+    assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);
+    reset_request(&request);
+
+    prepare_inference_metadata();
+    s_fake_time_us = 53405000;
+    s_metadata_result = ESP_OK;
+    assert(metadata_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_type, "application/json") == 0);
+    assert(strstr(request.response_body, "\"ready\":true") != NULL);
+    assert(strstr(request.response_body, "\"sequence\":12") != NULL);
+    assert(strstr(request.response_body,
+                  "\"prediction\":\"recycleable\"") != NULL);
+    assert(strstr(request.response_body, "\"confidence\":0.90234") != NULL);
+    assert(strstr(request.response_body, "\"age_ms\":580") != NULL);
+    assert(strstr(request.response_body, "\"jpeg_bytes\":6") != NULL);
+    assert(strstr(request.response_body, "\"dsp_ms\":26") != NULL);
+    assert(strstr(request.response_body,
+                  "\"classification_ms\":289") != NULL);
+    assert(strstr(request.response_body, "\"anomaly_ms\":0") != NULL);
+    assert(strstr(request.response_body, "wet\\\"\\\\\\n") != NULL);
+    reset_request(&request);
+}
+
+static void verify_inference_image(const httpd_uri_t *image_uri)
+{
+    httpd_req_t request = {.query_string = "sequence=12"};
+    s_jpeg_result = ESP_OK;
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(s_requested_inference_sequence == 12);
+    assert(strcmp(request.response_type, "image/jpeg") == 0);
+    assert(request.response_length == sizeof(s_inference_jpeg));
+    assert(memcmp(request.response_body,
+                  s_inference_jpeg,
+                  sizeof(s_inference_jpeg)) == 0);
+    assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);
+    assert(strcmp(find_header(&request, "X-Inference-Sequence"), "12") == 0);
+    reset_request(&request);
+
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    request.query_string = "sequence=12x";
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    request.query_string = "sequence=4294967296";
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    request.query_string = "sequence=12";
+    s_jpeg_result = ESP_ERR_NOT_FOUND;
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_503) == 0);
+    reset_request(&request);
+
+    request.query_string = "sequence=11";
+    s_jpeg_result = ESP_ERR_INVALID_STATE;
+    assert(image_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_409) == 0);
+    reset_request(&request);
+    s_jpeg_result = ESP_OK;
+}
+
+static void verify_response_buffer_allocation_failure(void)
+{
+    memset(s_uri_count, 0, sizeof(s_uri_count));
+    memset(s_stop_calls, 0, sizeof(s_stop_calls));
+    s_server_count = 0;
+    s_register_calls = 0;
+    s_fail_register_call = 0;
+    s_fail_control_stop_once = false;
+    s_heap_allocate = false;
+    const int allocations_before = s_heap_allocations;
+    const int frees_before = s_heap_frees;
+
+    assert(http_capture_start() == ESP_ERR_NO_MEM);
+    assert(s_heap_allocations == allocations_before + 1);
+    assert(s_heap_frees == frees_before);
+    assert(s_server_count == 0);
+    s_heap_allocate = true;
+}
+
 int main(void)
 {
     assert(http_capture_start() == ESP_OK);
     assert(http_capture_start() == ESP_OK);
+    assert(s_heap_allocations == 1);
+    assert(s_heap_frees == 0);
     assert(s_server_count == 2);
-    assert(s_uri_count[0] == 3);
+    assert(s_uri_count[0] == 5);
     assert(s_uri_count[1] == 1);
     assert(s_server_config[0].server_port == 80);
     assert(s_server_config[0].ctrl_port == 32768);
@@ -530,10 +760,15 @@ int main(void)
     const httpd_uri_t *index_uri = find_uri(0, "/");
     const httpd_uri_t *capture_uri = find_uri(0, "/capture");
     const httpd_uri_t *status_uri = find_uri(0, "/api/status");
+    const httpd_uri_t *inference_uri = find_uri(0, "/api/inference");
+    const httpd_uri_t *inference_image_uri =
+        find_uri(0, "/api/inference/image");
     const httpd_uri_t *stream_uri = find_uri(1, "/stream");
     assert(index_uri != NULL);
     assert(capture_uri != NULL);
     assert(status_uri != NULL);
+    assert(inference_uri != NULL);
+    assert(inference_image_uri != NULL);
     assert(stream_uri != NULL);
 
     verify_preview_page(index_uri);
@@ -541,7 +776,10 @@ int main(void)
     verify_capture_failures(capture_uri);
     verify_stream(stream_uri);
     verify_status(status_uri);
+    verify_inference_metadata(inference_uri);
+    verify_inference_image(inference_image_uri);
     verify_stream_stops_cleanly(stream_uri);
+    assert(s_heap_frees == 1);
 
     http_capture_stop();
     http_capture_stop();
@@ -550,6 +788,7 @@ int main(void)
 
     verify_failed_rollback_keeps_server_handle();
     verify_start_retries_incomplete_stop();
+    verify_response_buffer_allocation_failure();
 
     puts("http capture component behavior passed");
     return 0;
