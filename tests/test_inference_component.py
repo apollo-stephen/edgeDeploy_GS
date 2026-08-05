@@ -157,9 +157,13 @@ class InferenceComponentBehaviorTest(unittest.TestCase):
 
             scenarios = {
                 "success": "inference success behavior passed",
-                "no-memory": "inference allocation failure passed",
+                "mutex-failure": "inference mutex failure passed",
+                "no-memory-rgb": "inference allocation failure passed",
+                "no-memory-staging": "inference allocation failure passed",
+                "no-memory-published": "inference allocation failure passed",
                 "task-failure": "inference task failure rollback passed",
                 "invalid-frame": "inference invalid frame cleanup passed",
+                "oversized-frame": "inference oversized frame preservation passed",
                 "decode-failure": "inference decode failure cleanup passed",
                 "classifier-failure": "inference classifier failure passed",
                 "uncertain": "inference uncertainty reporting passed",
