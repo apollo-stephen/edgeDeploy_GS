@@ -28,6 +28,9 @@
 #define PART_BOUNDARY "123456789000000000000987654321"
 
 static const char *TAG = "http_capture";
+
+#define HTTP_STATUS_CONFLICT "409 Conflict"
+#define HTTP_STATUS_SERVICE_UNAVAILABLE "503 Service Unavailable"
 static const char *STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
@@ -383,17 +386,17 @@ static esp_err_t inference_image_get_handler(httpd_req_t *request)
         &jpeg_bytes);
     if (copy_err == ESP_ERR_NOT_FOUND) {
         return send_inference_image_error(request,
-                                          HTTPD_503,
+                                          HTTP_STATUS_SERVICE_UNAVAILABLE,
                                           "Inference snapshot not ready");
     }
     if (copy_err == ESP_ERR_INVALID_STATE) {
         return send_inference_image_error(request,
-                                          HTTPD_409,
+                                          HTTP_STATUS_CONFLICT,
                                           "Inference sequence is stale");
     }
     if (copy_err != ESP_OK) {
         return send_inference_image_error(request,
-                                          HTTPD_500_INTERNAL_SERVER_ERROR,
+                                          HTTPD_500,
                                           "Inference snapshot unavailable");
     }
 

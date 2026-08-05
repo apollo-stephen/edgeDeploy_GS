@@ -182,10 +182,11 @@ esp_err_t httpd_resp_send_chunk(httpd_req_t *request,
 }
 
 esp_err_t httpd_resp_send_err(httpd_req_t *request,
-                              const char *status,
+                              httpd_err_code_t error,
                               const char *message)
 {
-    httpd_resp_set_status(request, status);
+    assert(error == HTTPD_500_INTERNAL_SERVER_ERROR);
+    httpd_resp_set_status(request, HTTPD_500);
     return httpd_resp_sendstr(request, message);
 }
 
@@ -600,7 +601,7 @@ static void verify_capture_failures(const httpd_uri_t *capture_uri)
     s_frame.format = PIXFORMAT_RGB565;
     assert(capture_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_status,
-                  HTTPD_500_INTERNAL_SERVER_ERROR) == 0);
+                  HTTPD_500) == 0);
     assert(s_release_calls == releases_before + 1);
     reset_request(&request);
 
@@ -609,7 +610,7 @@ static void verify_capture_failures(const httpd_uri_t *capture_uri)
     s_frame.height = 120;
     assert(capture_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_status,
-                  HTTPD_500_INTERNAL_SERVER_ERROR) == 0);
+                  HTTPD_500) == 0);
     assert(s_release_calls == releases_before + 2);
     reset_request(&request);
 }
@@ -718,13 +719,13 @@ static void verify_inference_image(const httpd_uri_t *image_uri)
     request.query_string = "sequence=12";
     s_jpeg_result = ESP_ERR_NOT_FOUND;
     assert(image_uri->handler(&request) == ESP_OK);
-    assert(strcmp(request.response_status, HTTPD_503) == 0);
+    assert(strcmp(request.response_status, "503 Service Unavailable") == 0);
     reset_request(&request);
 
     request.query_string = "sequence=11";
     s_jpeg_result = ESP_ERR_INVALID_STATE;
     assert(image_uri->handler(&request) == ESP_OK);
-    assert(strcmp(request.response_status, HTTPD_409) == 0);
+    assert(strcmp(request.response_status, "409 Conflict") == 0);
     reset_request(&request);
     s_jpeg_result = ESP_OK;
 }
