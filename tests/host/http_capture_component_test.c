@@ -530,16 +530,31 @@ static void verify_preview_page(const httpd_uri_t *index_uri)
     assert(strcmp(request.response_type, "text/html; charset=utf-8") == 0);
     assert(strstr(request.response_body, "Capture now") != NULL);
     assert(strstr(request.response_body, "Pause preview") != NULL);
-    assert(strstr(request.response_body, "width:128px;height:128px") != NULL);
+    assert(strstr(request.response_body, "id=\"livePreview\"") != NULL);
+    assert(strstr(request.response_body, "id=\"inferenceSnapshot\"") != NULL);
+    assert(strstr(request.response_body, "id=\"prediction\"") != NULL);
+    assert(strstr(request.response_body, "id=\"scores\"") != NULL);
+    assert(strstr(request.response_body, "id=\"timing\"") != NULL);
+    assert(strstr(request.response_body, "width:128px") != NULL);
+    assert(strstr(request.response_body, "height:128px") != NULL);
     assert(strstr(request.response_body,
                   "const streamUrl=`http://${location.hostname}:81/stream`;") != NULL);
     assert(strstr(request.response_body,
-                  "preview.src=`${streamUrl}?t=${Date.now()}`;") != NULL);
+                  "livePreview.src=`${streamUrl}?t=${Date.now()}`;") != NULL);
     assert(strstr(request.response_body, "window.open") != NULL);
     assert(strstr(request.response_body, "Date.now()") != NULL);
-    assert(strstr(request.response_body, "setInterval") == NULL);
-    assert(strstr(request.response_body, "response.blob()") == NULL);
-    assert(strstr(request.response_body, "URL.createObjectURL") == NULL);
+    assert(strstr(request.response_body, "fetch('/api/inference'") != NULL);
+    assert(strstr(request.response_body,
+                  "/api/inference/image?sequence=") != NULL);
+    assert(strstr(request.response_body, "X-Inference-Sequence") != NULL);
+    assert(strstr(request.response_body, "response.blob()") != NULL);
+    assert(strstr(request.response_body, "URL.createObjectURL") != NULL);
+    assert(strstr(request.response_body, "URL.revokeObjectURL") != NULL);
+    assert(strstr(request.response_body, "await new Promise") != NULL);
+    assert(strstr(request.response_body, ".textContent=") != NULL);
+    assert(strstr(request.response_body, "innerHTML") == NULL);
+    assert(strstr(request.response_body, "grid-template-columns") != NULL);
+    assert(strstr(request.response_body, "@media") != NULL);
     assert(strstr(request.response_body, "fetch(`/capture") == NULL);
     assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);
     reset_request(&request);

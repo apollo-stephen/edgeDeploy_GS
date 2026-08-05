@@ -38,6 +38,7 @@ class HttpCaptureComponentBehaviorTest(unittest.TestCase):
                     str(ROOT / "components/INFERENCE/include"),
                     str(ROOT / "tests/host/http_capture_component_test.c"),
                     str(ROOT / "components/HTTP_CAPTURE/http_capture.c"),
+                    str(ROOT / "components/HTTP_CAPTURE/dashboard_page.c"),
                     "-o",
                     str(executable),
                 ],

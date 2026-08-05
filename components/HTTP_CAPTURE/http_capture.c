@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "CAMERA.h"
+#include "dashboard_page.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -118,69 +119,13 @@ static bool append_json_string(char *buffer,
     return append_format(buffer, capacity, used, "\"");
 }
 
-static const char INDEX_HTML[] =
-    "<!doctype html><html lang=\"en\"><head>"
-    "<meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>EdgeDeploy camera</title>"
-    "<style>"
-    "body{font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;"
-    "padding:0 1rem;background:#f5f7fa;color:#172033}"
-    ".card{background:white;border-radius:16px;padding:1.25rem;"
-    "box-shadow:0 8px 28px #18243a1f}"
-    "img{display:block;width:128px;height:128px;max-width:100%;"
-    "margin:1rem auto;image-rendering:auto;background:#e7ebf0;"
-    "border-radius:10px;object-fit:contain}"
-    ".controls{display:flex;gap:.75rem;flex-wrap:wrap}"
-    "button{border:0;border-radius:9px;padding:.7rem 1rem;font-weight:650;"
-    "cursor:pointer;background:#155eef;color:white}"
-    "button.secondary{background:#e7ecf5;color:#172033}"
-    "#statusText{min-height:1.5rem;color:#46546a}"
-    "</style></head><body><main class=\"card\">"
-    "<h1>OV5640 capture</h1>"
-    "<p>Native 128x128 MJPEG preview at 15 FPS</p>"
-    "<img id=\"preview\" alt=\"Camera capture\">"
-    "<p id=\"statusText\">Starting preview...</p>"
-    "<div class=\"controls\">"
-    "<button id=\"captureButton\" type=\"button\">Capture now</button>"
-    "<button id=\"streamButton\" class=\"secondary\" type=\"button\">"
-    "Pause preview</button></div>"
-    "<script>"
-    "const preview=document.getElementById('preview');"
-    "const statusText=document.getElementById('statusText');"
-    "const captureButton=document.getElementById('captureButton');"
-    "const streamButton=document.getElementById('streamButton');"
-    "const streamUrl=`http://${location.hostname}:81/stream`;"
-    "let streaming=false;"
-    "function startStream(){"
-    "preview.src=`${streamUrl}?t=${Date.now()}`;"
-    "streaming=true;"
-    "streamButton.textContent='Pause preview';"
-    "statusText.textContent='Streaming at up to 15 FPS';"
-    "}"
-    "function stopStream(){"
-    "preview.removeAttribute('src');"
-    "streaming=false;"
-    "streamButton.textContent='Resume preview';"
-    "statusText.textContent='Preview paused';"
-    "}"
-    "captureButton.addEventListener('click',()=>{"
-    "window.open(`/capture?t=${Date.now()}`,'_blank','noopener');"
-    "});"
-    "streamButton.addEventListener('click',()=>{"
-    "if(streaming)stopStream();else startStream();"
-    "});"
-    "preview.addEventListener('error',()=>{"
-    "if(streaming)statusText.textContent='Stream disconnected; pause and resume to retry';"
-    "});"
-    "startStream();"
-    "</script></main></body></html>";
-
 static esp_err_t index_get_handler(httpd_req_t *request)
 {
     httpd_resp_set_type(request, "text/html; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_send(request, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(request,
+                           http_capture_dashboard_html(),
+                           HTTPD_RESP_USE_STRLEN);
 }
 
 static bool frame_is_valid_jpeg(const camera_fb_t *frame)
