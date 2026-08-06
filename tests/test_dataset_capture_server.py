@@ -24,12 +24,17 @@ class FakeManager:
             "failed_count": 0,
             "latest_file": None,
             "last_error": None,
+            "session_token": None,
+            "recent_captures": [],
         }
         self.start_arguments = None
         self.stop_calls = 0
         self.shutdown_calls = 0
         self.start_error = None
         self.snapshot_error = None
+        self.read_capture_error = None
+        self.capture_payloads = {}
+        self.capture_read_calls = []
 
     def snapshot(self):
         if self.snapshot_error is not None:
@@ -50,6 +55,17 @@ class FakeManager:
 
     def shutdown(self):
         self.shutdown_calls += 1
+
+    def read_recent_capture(self, session_token, sequence):
+        self.capture_read_calls.append((session_token, sequence))
+        if self.read_capture_error is not None:
+            raise self.read_capture_error
+        try:
+            return self.capture_payloads[(session_token, sequence)]
+        except KeyError as caught_error:
+            raise FileNotFoundError(
+                "Recent capture is not available"
+            ) from caught_error
 
 
 class DatasetCaptureServerTest(unittest.TestCase):
@@ -364,6 +380,71 @@ class DatasetCaptureServerTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(json.loads(body)["running"])
         self.assertEqual(1, self.manager.stop_calls)
+
+    def test_recent_capture_route_returns_exact_saved_jpeg(self):
+        token = "a" * 32
+        payload = b"\xff\xd8saved\xff\xd9"
+        self.manager.capture_payloads[(token, 7)] = payload
+
+        try:
+            response = request.urlopen(
+                f"{self.base_url}/api/captures/{token}/7",
+                timeout=2,
+            )
+        except error.HTTPError as caught_error:
+            response = caught_error
+        with response:
+            self.assertEqual(200, response.status)
+            self.assertEqual("image/jpeg", response.headers["Content-Type"])
+            self.assertEqual("no-store", response.headers["Cache-Control"])
+            self.assertEqual(str(len(payload)), response.headers["Content-Length"])
+            self.assertEqual(payload, response.read())
+
+        self.assertEqual([(token, 7)], self.manager.capture_read_calls)
+
+    def test_recent_capture_route_rejects_malformed_and_stale_identifiers(self):
+        token = "a" * 32
+        malformed_paths = (
+            f"/api/captures/{'A' * 32}/1",
+            f"/api/captures/{'a' * 31}/1",
+            "/api/captures/not-a-token/1",
+            f"/api/captures/{token}/0",
+            f"/api/captures/{token}/-1",
+            f"/api/captures/{token}/+1",
+            f"/api/captures/{token}",
+            f"/api/captures/{token}/1/extra",
+        )
+        for path in malformed_paths:
+            with self.subTest(path=path):
+                status, content_type, _, body = self.request("GET", path)
+                self.assertEqual(404, status)
+                self.assertEqual("application/json; charset=utf-8", content_type)
+                self.assertIn("error", json.loads(body))
+        self.assertEqual([], self.manager.capture_read_calls)
+
+        status, content_type, _, body = self.request(
+            "GET", f"/api/captures/{'b' * 32}/9"
+        )
+
+        self.assertEqual(404, status)
+        self.assertEqual("application/json; charset=utf-8", content_type)
+        self.assertEqual(
+            "Recent capture is not available",
+            json.loads(body)["error"],
+        )
+        self.assertEqual([("b" * 32, 9)], self.manager.capture_read_calls)
+
+    def test_recent_capture_route_hides_unexpected_manager_errors(self):
+        self.manager.read_capture_error = RuntimeError("private image detail")
+
+        status, _, _, body = self.request(
+            "GET", f"/api/captures/{'a' * 32}/1"
+        )
+
+        decoded = body.decode("utf-8")
+        self.assertEqual(500, status)
+        self.assertEqual("Internal server error", json.loads(body)["error"])
+        self.assertNotIn("private image detail", decoded)
 
     def test_unknown_routes_return_json_404(self):
         for method, path, payload in (

@@ -4,6 +4,7 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
 import signal
 import threading
 from urllib.parse import urlsplit
@@ -18,6 +19,9 @@ from dataset_capture import (
 
 
 MAX_REQUEST_BODY_BYTES = 4096
+RECENT_CAPTURE_PATH = re.compile(
+    r"^/api/captures/([0-9a-f]{32})/([1-9][0-9]*)$"
+)
 
 INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
@@ -264,6 +268,14 @@ def create_server(
             self.end_headers()
             self.wfile.write(index_html)
 
+        def _send_jpeg(self, payload: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def _read_json_object(self) -> dict[str, object]:
             try:
                 content_length = int(self.headers.get("Content-Length", ""))
@@ -295,7 +307,24 @@ def create_server(
                 else:
                     self._send_json(200, state)
             else:
-                self._send_json(404, {"error": "Route not found"})
+                capture_match = RECENT_CAPTURE_PATH.fullmatch(path)
+                if capture_match is None:
+                    self._send_json(404, {"error": "Route not found"})
+                    return
+                try:
+                    payload = active_manager.read_recent_capture(
+                        capture_match.group(1),
+                        int(capture_match.group(2)),
+                    )
+                except FileNotFoundError:
+                    self._send_json(
+                        404,
+                        {"error": "Recent capture is not available"},
+                    )
+                except Exception:
+                    self._send_json(500, {"error": "Internal server error"})
+                else:
+                    self._send_jpeg(payload)
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
