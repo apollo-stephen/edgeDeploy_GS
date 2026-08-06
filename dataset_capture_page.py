@@ -19,6 +19,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     .visual-panel > img { display: block; width: 256px; height: 256px; max-width: 100%; margin: .5rem auto; image-rendering: pixelated; object-fit: contain; background: #e7ebf0; border-radius: 10px; }
     .muted { min-height: 1.4rem; color: #59677d; font-size: .9rem; }
     .thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: .45rem; min-height: 64px; }
+    .thumbnail-grid img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; image-rendering: pixelated; background: #e7ebf0; border-radius: 7px; }
     .capture-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; align-items: end; }
     .controls { display: flex; gap: .75rem; flex-wrap: wrap; grid-column: 1 / -1; }
     label { display: grid; gap: .25rem; }
@@ -74,6 +75,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     const streamUrl = __STREAM_URL__;
     const preview = document.getElementById("preview");
     const previewStatus = document.getElementById("previewStatus");
+    const latestCapture = document.getElementById("latestCapture");
+    const galleryStatus = document.getElementById("galleryStatus");
+    const recentGallery = document.getElementById("recentGallery");
     const datasetName = document.getElementById("datasetName");
     const intervalMs = document.getElementById("intervalMs");
     const startButton = document.getElementById("startButton");
@@ -87,6 +91,10 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     let refreshGeneration = 0;
     let previewConnected = false;
     let previewReconnectTimer = null;
+    let gallerySessionToken = null;
+    let statusPollRunning = false;
+    const loadedCaptures = new Map();
+    const pendingCaptures = new Set();
 
     startButton.disabled = true;
     stopButton.disabled = true;
@@ -110,6 +118,133 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         previewReconnectTimer = null;
         startPreview();
       }, 1000);
+    }
+
+    function clearGallery() {
+      loadedCaptures.forEach(item => URL.revokeObjectURL(item.url));
+      loadedCaptures.clear();
+      pendingCaptures.clear();
+      recentGallery.replaceChildren();
+      latestCapture.removeAttribute("src");
+    }
+
+    async function loadRecentCapture(token, record) {
+      const pendingKey = `${token}:${record.sequence}`;
+      if (loadedCaptures.has(record.sequence) || pendingCaptures.has(pendingKey)) {
+        return;
+      }
+      pendingCaptures.add(pendingKey);
+      try {
+        const response = await fetch(
+          `/api/captures/${token}/${record.sequence}`,
+          {cache: "no-store"},
+        );
+        if (!response.ok) {
+          throw new Error(`图片请求失败 (${response.status})`);
+        }
+        const url = URL.createObjectURL(await response.blob());
+        const candidate = new Image();
+        try {
+          await new Promise((resolve, reject) => {
+            candidate.onload = resolve;
+            candidate.onerror = () => reject(new Error("图片解码失败"));
+            candidate.src = url;
+          });
+        } catch (error) {
+          URL.revokeObjectURL(url);
+          throw error;
+        }
+        if (token !== gallerySessionToken) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        loadedCaptures.set(record.sequence, {...record, url});
+      } finally {
+        pendingCaptures.delete(pendingKey);
+      }
+    }
+
+    function renderGallery(records) {
+      const thumbnails = [];
+      let newestLoaded = null;
+      records.forEach(record => {
+        const loaded = loadedCaptures.get(record.sequence);
+        if (!loaded) {
+          return;
+        }
+        if (newestLoaded === null) {
+          newestLoaded = loaded;
+        }
+        const thumbnail = document.createElement("img");
+        thumbnail.src = loaded.url;
+        thumbnail.alt = `已保存图片 ${loaded.filename}`;
+        thumbnail.title = `${loaded.filename} · ${loaded.captured_at}`;
+        thumbnails.push(thumbnail);
+      });
+      recentGallery.replaceChildren(...thumbnails);
+      if (newestLoaded === null) {
+        latestCapture.removeAttribute("src");
+      } else {
+        latestCapture.src = newestLoaded.url;
+      }
+    }
+
+    async function reconcileGallery(state) {
+      const token = typeof state.session_token === "string"
+        ? state.session_token
+        : null;
+      if (token === null) {
+        if (gallerySessionToken !== null) {
+          clearGallery();
+          gallerySessionToken = null;
+        }
+        galleryStatus.textContent = state.running
+          ? "等待第一张已保存图片"
+          : "尚未开始采集";
+        return;
+      }
+      if (token !== gallerySessionToken) {
+        clearGallery();
+        gallerySessionToken = token;
+      }
+
+      const records = Array.isArray(state.recent_captures)
+        ? state.recent_captures.filter(record =>
+          Number.isInteger(record.sequence) && record.sequence > 0 &&
+          typeof record.filename === "string" &&
+          typeof record.captured_at === "string"
+        ).slice(0, 30)
+        : [];
+      const desiredSequences = new Set(records.map(record => record.sequence));
+      loadedCaptures.forEach((loaded, sequence) => {
+        if (!desiredSequences.has(sequence)) {
+          URL.revokeObjectURL(loaded.url);
+          loadedCaptures.delete(sequence);
+        }
+      });
+
+      let firstError = null;
+      await Promise.all(records.map(async record => {
+        try {
+          await loadRecentCapture(token, record);
+        } catch (error) {
+          if (firstError === null) {
+            firstError = error;
+          }
+        }
+      }));
+      if (token !== gallerySessionToken) {
+        return;
+      }
+      renderGallery(records);
+      if (firstError !== null) {
+        galleryStatus.textContent = `部分图片加载失败：${firstError.message}`;
+      } else if (loadedCaptures.size === 0) {
+        galleryStatus.textContent = "等待第一张已保存图片";
+      } else {
+        galleryStatus.textContent =
+          `显示最近 ${loadedCaptures.size} 张（本轮已保存 ${state.saved_count} 张）`;
+      }
     }
 
     async function requestJson(path, options = {}) {
@@ -153,6 +288,10 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
     }
 
     async function synchronizeStatus() {
+      if (statusPollRunning) {
+        return null;
+      }
+      statusPollRunning = true;
       try {
         const state = await refreshStatus();
         if (state === null) {
@@ -162,12 +301,15 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           transition = "idle";
           renderStatus(state);
         }
+        await reconcileGallery(state);
         return state;
       } catch (error) {
         startButton.disabled = true;
         stopButton.disabled = true;
         lastError.textContent = error.message;
         return null;
+      } finally {
+        statusPollRunning = false;
       }
     }
 
@@ -192,6 +334,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         transition = "idle";
         refreshGeneration += 1;
         renderStatus(state);
+        await reconcileGallery(state);
       } catch (error) {
         transition = "initializing";
         refreshGeneration += 1;
@@ -213,6 +356,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         transition = "idle";
         refreshGeneration += 1;
         renderStatus(state);
+        await reconcileGallery(state);
       } catch (error) {
         transition = "initializing";
         refreshGeneration += 1;

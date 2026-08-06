@@ -163,12 +163,15 @@ class DatasetCaptureServerTest(unittest.TestCase):
                 sourceAssignments: 0,
                 sourceRemovals: 0,
                 sourceValue: undefined,
+                children: [],
                 removeAttribute(name) {
                   if (name === "src") {
                     this.sourceRemovals += 1;
                     this.sourceValue = undefined;
                   }
                 },
+                replaceChildren(...children) { this.children = children; },
+                append(...children) { this.children.push(...children); },
                 addEventListener(name, listener) { this.listeners[name] = listener; },
               };
               Object.defineProperty(value, "src", {
@@ -183,6 +186,7 @@ class DatasetCaptureServerTest(unittest.TestCase):
             }
             global.document = {
               getElementById(id) { return elements.get(id) || element(id); },
+              createElement(tag) { return element(`${tag}-${elements.size}`); },
             };
             global.setTimeout = callback => queueMicrotask(callback);
             let intervalCallback;
@@ -194,6 +198,7 @@ class DatasetCaptureServerTest(unittest.TestCase):
             let resolveInitial;
             let initialRequested = false;
             let running = false;
+            let sessionToken = null;
             global.fetch = path => {
               if (path === "/api/status") {
                 if (!initialRequested) {
@@ -209,12 +214,13 @@ class DatasetCaptureServerTest(unittest.TestCase):
                 return Promise.resolve(response({
                   running, saved_count: running ? 0 : 1, failed_count: 0,
                   latest_file: running ? null : "saved.jpg", last_error: null,
-                  session_token: running ? "a".repeat(32) : null,
+                  session_token: sessionToken,
                   recent_captures: [],
                 }));
               }
               if (path === "/api/capture/start") {
                 running = true;
+                sessionToken = "a".repeat(32);
                 return Promise.resolve(response({
                   running, saved_count: 0, failed_count: 0,
                   latest_file: null, last_error: null,
@@ -226,7 +232,7 @@ class DatasetCaptureServerTest(unittest.TestCase):
                 return Promise.resolve(response({
                   running, saved_count: 1, failed_count: 0,
                   latest_file: "saved.jpg", last_error: null,
-                  session_token: "a".repeat(32), recent_captures: [],
+                  session_token: sessionToken, recent_captures: [],
                 }));
               }
               throw new Error(`unexpected request: ${path}`);
@@ -366,6 +372,220 @@ class DatasetCaptureServerTest(unittest.TestCase):
               assert.equal(previewElement.sourceAssignments, 2);
               previewElement.listeners.load();
               assert.equal(statusElement.textContent, "直播中");
+            })().catch(error => {
+              console.error(error);
+              process.exitCode = 1;
+            });
+            """
+        )
+
+        completed = subprocess.run(
+            ["node"],
+            input=harness + script + assertions,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_recent_gallery_is_bounded_deduplicated_and_session_scoped(self):
+        _, _, _, body = self.request("GET", "/")
+        script = re.search(
+            r"<script>(.*)</script>",
+            body.decode("utf-8"),
+            re.DOTALL,
+        ).group(1)
+        harness = textwrap.dedent(
+            """
+            const assert = require("node:assert/strict");
+            const elements = new Map();
+            let elementSequence = 0;
+            function makeElement(id) {
+              const value = {
+                id,
+                disabled: false,
+                textContent: "",
+                value: id === "datasetName" ? "wet" : "500",
+                listeners: {},
+                children: [],
+                sourceValue: undefined,
+                removeAttribute(name) {
+                  if (name === "src") this.sourceValue = undefined;
+                },
+                replaceChildren(...children) { this.children = children; },
+                append(...children) { this.children.push(...children); },
+                addEventListener(name, listener) { this.listeners[name] = listener; },
+              };
+              Object.defineProperty(value, "src", {
+                get() { return this.sourceValue; },
+                set(source) { this.sourceValue = source; },
+              });
+              return value;
+            }
+            function element(id) {
+              if (!elements.has(id)) elements.set(id, makeElement(id));
+              return elements.get(id);
+            }
+            global.document = {
+              getElementById(id) { return element(id); },
+              createElement(tag) {
+                elementSequence += 1;
+                return makeElement(`${tag}-${elementSequence}`);
+              },
+            };
+
+            const revokedUrls = [];
+            const failedImageKeys = new Set();
+            global.URL = {
+              createObjectURL(blob) { return `blob:${blob.key}`; },
+              revokeObjectURL(value) { revokedUrls.push(value); },
+            };
+            global.Image = class {
+              set src(value) {
+                queueMicrotask(() => {
+                  const key = value.slice("blob:".length);
+                  if (failedImageKeys.has(key)) this.onerror();
+                  else this.onload();
+                });
+              }
+            };
+
+            let intervalCallback;
+            global.setInterval = callback => { intervalCallback = callback; };
+            global.setTimeout = () => 1;
+
+            const tokenA = "a".repeat(32);
+            const tokenB = "b".repeat(32);
+            const imageFetches = [];
+            const delayedImageResolvers = new Map();
+            const delayedImageKeys = new Set();
+            let statusFetchCount = 0;
+            let holdStatus = false;
+            let heldStatusResolve;
+
+            function jsonResponse(value) {
+              return {ok: true, status: 200, async json() { return value; }};
+            }
+            function imageResponse(key) {
+              return {ok: true, status: 200, async blob() { return {key}; }};
+            }
+            function recent(high, low) {
+              const records = [];
+              for (let sequence = high; sequence >= low; sequence -= 1) {
+                records.push({
+                  sequence,
+                  filename: `${sequence}.jpg`,
+                  captured_at: `2026-08-06T00:00:${String(sequence).padStart(2, "0")}+00:00`,
+                });
+              }
+              return records;
+            }
+            function captureState(token, high, low, savedCount) {
+              return {
+                running: true,
+                saved_count: savedCount,
+                failed_count: 0,
+                latest_file: `${high}.jpg`,
+                last_error: null,
+                session_token: token,
+                recent_captures: recent(high, low),
+              };
+            }
+
+            global.fetch = path => {
+              if (path === "/api/status") {
+                statusFetchCount += 1;
+                const value = {
+                  running: false, saved_count: 0, failed_count: 0,
+                  latest_file: null, last_error: null,
+                  session_token: null, recent_captures: [],
+                };
+                if (holdStatus) {
+                  return new Promise(resolve => { heldStatusResolve = () => resolve(jsonResponse(value)); });
+                }
+                return Promise.resolve(jsonResponse(value));
+              }
+              const match = path.match(/^[/]api[/]captures[/]([0-9a-f]{32})[/]([0-9]+)$/);
+              if (!match) throw new Error(`unexpected request: ${path}`);
+              const key = `${match[1]}-${match[2]}`;
+              imageFetches.push(path);
+              if (delayedImageKeys.has(key)) {
+                return new Promise(resolve => delayedImageResolvers.set(
+                  key, () => resolve(imageResponse(key)),
+                ));
+              }
+              return Promise.resolve(imageResponse(key));
+            };
+            """
+        )
+        assertions = textwrap.dedent(
+            """
+            async function drain() {
+              await new Promise(resolve => setImmediate(resolve));
+              await new Promise(resolve => setImmediate(resolve));
+            }
+            function fetchCount(suffix) {
+              return imageFetches.filter(path => path.endsWith(suffix)).length;
+            }
+            (async () => {
+              await drain();
+              const gallery = elements.get("recentGallery");
+              const latest = elements.get("latestCapture");
+
+              const firstState = captureState(tokenA, 30, 1, 30);
+              await reconcileGallery(firstState);
+              assert.equal(gallery.children.length, 30);
+              assert.equal(latest.src, `blob:${tokenA}-30`);
+              assert.equal(imageFetches.length, 30);
+
+              await reconcileGallery(firstState);
+              assert.equal(imageFetches.length, 30);
+
+              await reconcileGallery(captureState(tokenA, 31, 2, 31));
+              assert.equal(gallery.children.length, 30);
+              assert.equal(latest.src, `blob:${tokenA}-31`);
+              assert.equal(fetchCount("/31"), 1);
+              assert.ok(revokedUrls.includes(`blob:${tokenA}-1`));
+
+              const key32 = `${tokenA}-32`;
+              delayedImageKeys.add(key32);
+              const state32 = captureState(tokenA, 32, 3, 32);
+              const firstReconcile = reconcileGallery(state32);
+              await drain();
+              const secondReconcile = reconcileGallery(state32);
+              await drain();
+              assert.equal(fetchCount("/32"), 1);
+              delayedImageResolvers.get(key32)();
+              await Promise.all([firstReconcile, secondReconcile]);
+              delayedImageKeys.delete(key32);
+              assert.equal(latest.src, `blob:${tokenA}-32`);
+
+              const key33 = `${tokenA}-33`;
+              failedImageKeys.add(key33);
+              await reconcileGallery(captureState(tokenA, 33, 4, 33));
+              assert.equal(latest.src, `blob:${tokenA}-32`);
+              failedImageKeys.delete(key33);
+
+              await reconcileGallery(captureState(tokenA, 34, 5, 34));
+              assert.equal(latest.src, `blob:${tokenA}-34`);
+
+              const previousSessionUrls = [...loadedCaptures.values()]
+                .map(item => item.url);
+              await reconcileGallery(captureState(tokenB, 1, 1, 1));
+              assert.equal(gallery.children.length, 1);
+              assert.equal(latest.src, `blob:${tokenB}-1`);
+              previousSessionUrls.forEach(url => assert.ok(revokedUrls.includes(url)));
+
+              const statusCountBefore = statusFetchCount;
+              holdStatus = true;
+              const firstPoll = intervalCallback();
+              const secondPoll = intervalCallback();
+              await drain();
+              assert.equal(statusFetchCount, statusCountBefore + 1);
+              heldStatusResolve();
+              await Promise.all([firstPoll, secondPoll]);
             })().catch(error => {
               console.error(error);
               process.exitCode = 1;
