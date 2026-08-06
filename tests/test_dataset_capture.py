@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 from dataset_capture import (
     CaptureAlreadyRunningError,
@@ -36,11 +37,7 @@ def wait_until(test_case, predicate, timeout_seconds=2.0):
 class FakeClient:
     def __init__(self, outcomes):
         self.outcomes = iter(outcomes)
-        self.wait_calls = 0
         self.capture_calls = 0
-
-    def wait_for_stream_release(self, timeout_seconds=3.0):
-        self.wait_calls += 1
 
     def capture(self):
         self.capture_calls += 1
@@ -250,30 +247,13 @@ class Esp32ClientTest(unittest.TestCase):
         self.thread.join()
         self.server.server_close()
 
-    def test_client_fetches_status_waits_and_captures_frame(self):
+    def test_client_captures_frame(self):
         client = Esp32Client(self.base_url)
-        self.assertFalse(client.fetch_status()["stream_client_connected"])
-        client.wait_for_stream_release(timeout_seconds=0.5)
+
         frame = client.capture()
+
         self.assertEqual(JPEG, frame.payload)
         self.assertTrue(frame.source_url.startswith(f"{self.base_url}/capture?t="))
-
-    def test_wait_for_stream_release_times_out_while_stream_is_connected(self):
-        self.server.stream_connected = True
-        client = Esp32Client(self.base_url)
-        with self.assertRaises(TimeoutError):
-            client.wait_for_stream_release(timeout_seconds=0.05)
-
-    def test_wait_for_stream_release_limits_each_status_request_to_deadline(self):
-        self.server.stream_connected = True
-        self.server.status_delay_seconds = 0.2
-        client = Esp32Client(self.base_url)
-        started_at = time.monotonic()
-
-        with self.assertRaises(TimeoutError):
-            client.wait_for_stream_release(timeout_seconds=0.05)
-
-        self.assertLess(time.monotonic() - started_at, 0.15)
 
 
 class CaptureManagerTest(unittest.TestCase):
@@ -285,7 +265,7 @@ class CaptureManagerTest(unittest.TestCase):
     def tearDown(self):
         self.temporary_directory.cleanup()
 
-    def test_start_saves_frames_and_stop_returns_final_state(self):
+    def test_start_captures_without_a_stream_release_api(self):
         client = FakeClient([self.frame, self.frame])
         manager = CaptureManager(self.data_root, client)
 
@@ -295,7 +275,57 @@ class CaptureManagerTest(unittest.TestCase):
 
         self.assertFalse(state["running"])
         self.assertEqual(2, state["saved_count"])
-        self.assertEqual(1, client.wait_calls)
+        self.assertRegex(state["session_token"], r"^[0-9a-f]{32}$")
+        self.assertEqual(
+            [2, 1],
+            [item["sequence"] for item in state["recent_captures"]],
+        )
+
+    def test_recent_captures_are_newest_first_and_bounded(self):
+        recent_limit = 30
+        client = FakeClient([self.frame] * (recent_limit + 1))
+        manager = CaptureManager(self.data_root, client)
+
+        with patch("dataset_capture.MIN_INTERVAL_MS", 1):
+            manager.start("wet", 1)
+            wait_until(
+                self,
+                lambda: manager.snapshot()["saved_count"] == recent_limit + 1,
+                timeout_seconds=4.0,
+            )
+            state = manager.stop()
+
+        recent = state["recent_captures"]
+        self.assertEqual(recent_limit, len(recent))
+        self.assertEqual(
+            list(range(recent_limit + 1, 1, -1)),
+            [item["sequence"] for item in recent],
+        )
+        self.assertEqual(
+            JPEG,
+            manager.read_recent_capture(
+                state["session_token"], recent[0]["sequence"]
+            ),
+        )
+
+    def test_new_session_clears_recent_captures_and_rejects_old_token(self):
+        client = FakeClient([self.frame, self.frame])
+        manager = CaptureManager(self.data_root, client)
+
+        manager.start("wet", 60_000)
+        wait_until(self, lambda: manager.snapshot()["saved_count"] == 1)
+        old_state = manager.stop()
+
+        new_state = manager.start("wet", 60_000)
+        try:
+            self.assertNotEqual(
+                old_state["session_token"], new_state["session_token"]
+            )
+            self.assertEqual([], new_state["recent_captures"])
+            with self.assertRaises(FileNotFoundError):
+                manager.read_recent_capture(old_state["session_token"], 1)
+        finally:
+            manager.stop()
 
     def test_start_rejects_a_second_worker(self):
         client = FakeClient([self.frame])
@@ -317,6 +347,10 @@ class CaptureManagerTest(unittest.TestCase):
         self.assertEqual(1, state["failed_count"])
         self.assertEqual(1, state["saved_count"])
         self.assertEqual(4, client.capture_calls)
+        self.assertEqual(
+            [1],
+            [item["sequence"] for item in state["recent_captures"]],
+        )
 
     def test_worker_stops_after_five_consecutive_failed_frames(self):
         client = FakeClient([OSError("offline")] * 15)
@@ -329,6 +363,7 @@ class CaptureManagerTest(unittest.TestCase):
         self.assertEqual(5, state["failed_count"])
         self.assertEqual(0, state["saved_count"])
         self.assertIn("连续 5 张采集失败", state["last_error"])
+        self.assertEqual([], state["recent_captures"])
 
     def test_start_rejects_out_of_range_intervals_before_creating_dataset(self):
         manager = CaptureManager(self.data_root, FakeClient([]))
@@ -356,9 +391,9 @@ class CaptureManagerTest(unittest.TestCase):
                 super().__init__(outcomes)
                 self.worker_started = threading.Event()
 
-            def wait_for_stream_release(self, timeout_seconds=3.0):
-                super().wait_for_stream_release(timeout_seconds)
+            def capture(self):
                 self.worker_started.set()
+                return super().capture()
 
         client = BlockingClient([self.frame])
         manager = CaptureManager(self.data_root, client)

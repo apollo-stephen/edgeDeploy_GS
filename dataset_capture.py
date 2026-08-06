@@ -1,14 +1,15 @@
 """Local dataset storage and capture client for the ESP32 camera."""
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import csv
 import hashlib
 import io
-import json
 import os
 import re
+import secrets
 import stat
 import threading
 import time
@@ -23,6 +24,8 @@ FRAME_RETRIES = 2
 RETRY_DELAY_SECONDS = 0.5
 MAX_CONSECUTIVE_FAILURES = 5
 DATASET_NAME_MAX_LENGTH = 64
+RECENT_CAPTURE_LIMIT = 30
+SESSION_TOKEN_BYTES = 16
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,21 @@ class Frame:
     payload: bytes
     source_url: str
     captured_at: datetime
+
+
+@dataclass(frozen=True)
+class _RecentCapture:
+    sequence: int
+    filename: str
+    captured_at: str
+    path: Path
+
+    def public_metadata(self) -> dict[str, object]:
+        return {
+            "sequence": self.sequence,
+            "filename": self.filename,
+            "captured_at": self.captured_at,
+        }
 
 
 def normalize_dataset_name(value: str) -> str:
@@ -261,42 +279,6 @@ class Esp32Client:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    def fetch_status(self) -> dict[str, object]:
-        return self._fetch_status(self.timeout_seconds)
-
-    def _fetch_status(self, timeout_seconds: float) -> dict[str, object]:
-        with request.urlopen(
-            f"{self.base_url}/api/status", timeout=timeout_seconds
-        ) as response:
-            if response.getcode() != 200:
-                raise ValueError("ESP32 status request failed")
-            try:
-                status = json.loads(response.read())
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise ValueError("ESP32 status response is not JSON") from error
-
-        if not isinstance(status, dict):
-            raise ValueError("ESP32 status response is not an object")
-        if status.get("camera_ready") is not True:
-            raise ValueError("ESP32 camera is not ready")
-        if status.get("frame_size") != "128x128":
-            raise ValueError("ESP32 frame size is not 128x128")
-        return status
-
-    def wait_for_stream_release(self, timeout_seconds: float = 3.0) -> None:
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("ESP32 stream client did not disconnect in time")
-            status = self._fetch_status(min(self.timeout_seconds, remaining))
-            if status.get("stream_client_connected") is False:
-                return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("ESP32 stream client did not disconnect in time")
-            time.sleep(min(0.1, remaining))
-
     def capture(self) -> Frame:
         capture_url = f"{self.base_url}/capture?t={time.time_ns()}"
         with request.urlopen(capture_url, timeout=self.timeout_seconds) as response:
@@ -327,6 +309,10 @@ class CaptureManager:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._worker: threading.Thread | None = None
+        self._capture_sequence = 0
+        self._recent_captures: deque[_RecentCapture] = deque(
+            maxlen=RECENT_CAPTURE_LIMIT
+        )
         self._state = {
             "running": False,
             "dataset_name": None,
@@ -335,7 +321,15 @@ class CaptureManager:
             "failed_count": 0,
             "latest_file": None,
             "last_error": None,
+            "session_token": None,
         }
+
+    def _snapshot_locked(self) -> dict[str, object]:
+        state = dict(self._state)
+        state["recent_captures"] = [
+            record.public_metadata() for record in reversed(self._recent_captures)
+        ]
+        return state
 
     def start(self, dataset_name: str, interval_ms: int) -> dict[str, object]:
         if not MIN_INTERVAL_MS <= interval_ms <= MAX_INTERVAL_MS:
@@ -349,6 +343,8 @@ class CaptureManager:
                 raise CaptureAlreadyRunningError("Dataset capture is already running")
             writer = DatasetWriter(self._data_root, dataset_name)
             self._stop_event.clear()
+            self._capture_sequence = 0
+            self._recent_captures.clear()
             self._state = {
                 "running": True,
                 "dataset_name": dataset_name,
@@ -357,6 +353,7 @@ class CaptureManager:
                 "failed_count": 0,
                 "latest_file": None,
                 "last_error": None,
+                "session_token": secrets.token_hex(SESSION_TOKEN_BYTES),
             }
             self._worker = threading.Thread(
                 target=self._run,
@@ -365,19 +362,19 @@ class CaptureManager:
                 daemon=True,
             )
             self._worker.start()
-            return dict(self._state)
+            return self._snapshot_locked()
 
     def _run(self, writer: DatasetWriter, interval_ms: int) -> None:
         consecutive_failures = 0
         try:
-            self._client.wait_for_stream_release(3.0)
             while not self._stop_event.is_set():
                 last_error = None
                 for attempt in range(FRAME_RETRIES + 1):
                     if self._stop_event.is_set():
                         return
                     try:
-                        destination = writer.save(self._client.capture())
+                        frame = self._client.capture()
+                        destination = writer.save(frame)
                     except Exception as error:
                         last_error = error
                         if attempt < FRAME_RETRIES and self._stop_event.wait(RETRY_DELAY_SECONDS):
@@ -385,9 +382,18 @@ class CaptureManager:
                     else:
                         consecutive_failures = 0
                         with self._lock:
+                            self._capture_sequence += 1
                             self._state["saved_count"] += 1
                             self._state["latest_file"] = str(destination)
                             self._state["last_error"] = None
+                            self._recent_captures.append(
+                                _RecentCapture(
+                                    sequence=self._capture_sequence,
+                                    filename=destination.name,
+                                    captured_at=frame.captured_at.isoformat(),
+                                    path=destination,
+                                )
+                            )
                         if self._stop_event.wait(interval_ms / 1000):
                             return
                         break
@@ -411,7 +417,23 @@ class CaptureManager:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
-            return dict(self._state)
+            return self._snapshot_locked()
+
+    def read_recent_capture(self, session_token: str, sequence: int) -> bytes:
+        with self._lock:
+            if session_token != self._state["session_token"]:
+                raise FileNotFoundError("Recent capture is not available")
+            record = next(
+                (
+                    item
+                    for item in self._recent_captures
+                    if item.sequence == sequence
+                ),
+                None,
+            )
+        if record is None:
+            raise FileNotFoundError("Recent capture is not available")
+        return record.path.read_bytes()
 
     def stop(self) -> dict[str, object]:
         with self._lock:
