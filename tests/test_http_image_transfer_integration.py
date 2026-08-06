@@ -26,6 +26,8 @@ class HttpImageTransferStartupTest(unittest.TestCase):
                     str(ROOT / "components/WIFIAP/include"),
                     "-I",
                     str(ROOT / "components/HTTP_CAPTURE/include"),
+                    "-I",
+                    str(ROOT / "components/INFERENCE/include"),
                     str(ROOT / "tests/host/http_image_transfer_integration_test.c"),
                     str(ROOT / "main/main.c"),
                     "-o",
@@ -48,6 +50,7 @@ class HttpImageTransferStartupTest(unittest.TestCase):
                 "camera-failure",
                 "wifi-failure",
                 "http-failure",
+                "inference-failure",
             ):
                 with self.subTest(scenario=scenario):
                     run_result = subprocess.run(

@@ -2,6 +2,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "http_capture.h"
+#include "inference.h"
 #include "nvs_flash.h"
 #include "wifi_ap.h"
 
@@ -43,6 +44,14 @@ void app_main(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
                  "WiFiAP initialization failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    err = inference_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Inference task startup failed: %s",
                  esp_err_to_name(err));
         return;
     }

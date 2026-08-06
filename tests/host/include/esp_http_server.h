@@ -10,6 +10,7 @@
 typedef void *httpd_handle_t;
 
 typedef struct httpd_req {
+    const char *query_string;
     const char *response_type;
     const char *response_status;
     const char *response_body;
@@ -40,7 +41,12 @@ typedef struct {
 
 #define HTTP_GET 0
 #define HTTPD_RESP_USE_STRLEN ((long)-1)
-#define HTTPD_500_INTERNAL_SERVER_ERROR "500 Internal Server Error"
+#define HTTPD_400 "400 Bad Request"
+#define HTTPD_500 "500 Internal Server Error"
+
+typedef enum {
+    HTTPD_500_INTERNAL_SERVER_ERROR = 0,
+} httpd_err_code_t;
 #define HTTPD_DEFAULT_CONFIG() \
     ((httpd_config_t){.stack_size = 4096, \
                       .max_uri_handlers = 8, \
@@ -67,5 +73,13 @@ esp_err_t httpd_resp_send_chunk(httpd_req_t *request,
                                 ssize_t length);
 esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *body);
 esp_err_t httpd_resp_send_err(httpd_req_t *request,
-                              const char *status,
+                              httpd_err_code_t error,
                               const char *message);
+size_t httpd_req_get_url_query_len(httpd_req_t *request);
+esp_err_t httpd_req_get_url_query_str(httpd_req_t *request,
+                                      char *buffer,
+                                      size_t buffer_length);
+esp_err_t httpd_query_key_value(const char *query,
+                                const char *key,
+                                char *value,
+                                size_t value_length);

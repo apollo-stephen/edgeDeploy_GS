@@ -6,6 +6,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#if !defined(CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE_CUSTOM)
+#error "Camera JPEG framebuffer must use the explicit project capacity"
+#endif
+_Static_assert(CONFIG_CAMERA_JPEG_MODE_FRAME_SIZE == CAMERA_MAX_JPEG_BYTES,
+               "Camera JPEG capacity must match sdkconfig");
+#endif
+
 static const char *TAG = "camera";
 static SemaphoreHandle_t s_capture_mutex;
 static bool s_camera_ready;

@@ -1,10 +1,14 @@
 #include "http_capture.h"
 
+#include <errno.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "CAMERA.h"
+#include "dashboard_page.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -12,6 +16,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "inference.h"
 #include "wifi_ap.h"
 
 #define CAPTURE_TIMEOUT_MS 2000
@@ -23,6 +28,9 @@
 #define PART_BOUNDARY "123456789000000000000987654321"
 
 static const char *TAG = "http_capture";
+
+#define HTTP_STATUS_CONFLICT "409 Conflict"
+#define HTTP_STATUS_SERVICE_UNAVAILABLE "503 Service Unavailable"
 static const char *STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
@@ -40,70 +48,87 @@ static bool s_stream_stop_requested;
 static uint32_t s_stream_frame_count;
 static uint32_t s_stream_failures;
 static double s_stream_fps;
+static uint8_t *s_inference_response_buffer;
 
-static const char INDEX_HTML[] =
-    "<!doctype html><html lang=\"en\"><head>"
-    "<meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>EdgeDeploy camera</title>"
-    "<style>"
-    "body{font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;"
-    "padding:0 1rem;background:#f5f7fa;color:#172033}"
-    ".card{background:white;border-radius:16px;padding:1.25rem;"
-    "box-shadow:0 8px 28px #18243a1f}"
-    "img{display:block;width:128px;height:128px;max-width:100%;"
-    "margin:1rem auto;image-rendering:auto;background:#e7ebf0;"
-    "border-radius:10px;object-fit:contain}"
-    ".controls{display:flex;gap:.75rem;flex-wrap:wrap}"
-    "button{border:0;border-radius:9px;padding:.7rem 1rem;font-weight:650;"
-    "cursor:pointer;background:#155eef;color:white}"
-    "button.secondary{background:#e7ecf5;color:#172033}"
-    "#statusText{min-height:1.5rem;color:#46546a}"
-    "</style></head><body><main class=\"card\">"
-    "<h1>OV5640 capture</h1>"
-    "<p>Native 128x128 MJPEG preview at 15 FPS</p>"
-    "<img id=\"preview\" alt=\"Camera capture\">"
-    "<p id=\"statusText\">Starting preview...</p>"
-    "<div class=\"controls\">"
-    "<button id=\"captureButton\" type=\"button\">Capture now</button>"
-    "<button id=\"streamButton\" class=\"secondary\" type=\"button\">"
-    "Pause preview</button></div>"
-    "<script>"
-    "const preview=document.getElementById('preview');"
-    "const statusText=document.getElementById('statusText');"
-    "const captureButton=document.getElementById('captureButton');"
-    "const streamButton=document.getElementById('streamButton');"
-    "const streamUrl=`http://${location.hostname}:81/stream`;"
-    "let streaming=false;"
-    "function startStream(){"
-    "preview.src=`${streamUrl}?t=${Date.now()}`;"
-    "streaming=true;"
-    "streamButton.textContent='Pause preview';"
-    "statusText.textContent='Streaming at up to 15 FPS';"
-    "}"
-    "function stopStream(){"
-    "preview.removeAttribute('src');"
-    "streaming=false;"
-    "streamButton.textContent='Resume preview';"
-    "statusText.textContent='Preview paused';"
-    "}"
-    "captureButton.addEventListener('click',()=>{"
-    "window.open(`/capture?t=${Date.now()}`,'_blank','noopener');"
-    "});"
-    "streamButton.addEventListener('click',()=>{"
-    "if(streaming)stopStream();else startStream();"
-    "});"
-    "preview.addEventListener('error',()=>{"
-    "if(streaming)statusText.textContent='Stream disconnected; pause and resume to retry';"
-    "});"
-    "startStream();"
-    "</script></main></body></html>";
+static bool append_format(char *buffer,
+                          size_t capacity,
+                          size_t *used,
+                          const char *format,
+                          ...)
+{
+    if (buffer == NULL || used == NULL || format == NULL || *used >= capacity) {
+        return false;
+    }
+
+    va_list args;
+    va_start(args, format);
+    const int length = vsnprintf(buffer + *used,
+                                 capacity - *used,
+                                 format,
+                                 args);
+    va_end(args);
+    if (length < 0 || (size_t)length >= capacity - *used) {
+        return false;
+    }
+    *used += (size_t)length;
+    return true;
+}
+
+static bool append_json_string(char *buffer,
+                               size_t capacity,
+                               size_t *used,
+                               const char *value)
+{
+    if (value == NULL || !append_format(buffer, capacity, used, "\"")) {
+        return false;
+    }
+
+    for (const unsigned char *cursor = (const unsigned char *)value;
+         *cursor != '\0';
+         ++cursor) {
+        const char *escape = NULL;
+        switch (*cursor) {
+            case '"': escape = "\\\""; break;
+            case '\\': escape = "\\\\"; break;
+            case '\b': escape = "\\b"; break;
+            case '\f': escape = "\\f"; break;
+            case '\n': escape = "\\n"; break;
+            case '\r': escape = "\\r"; break;
+            case '\t': escape = "\\t"; break;
+            default: break;
+        }
+        if (escape != NULL) {
+            if (!append_format(buffer, capacity, used, "%s", escape)) {
+                return false;
+            }
+        }
+        else if (*cursor < 0x20U) {
+            if (!append_format(buffer,
+                               capacity,
+                               used,
+                               "\\u%04x",
+                               (unsigned int)*cursor)) {
+                return false;
+            }
+        }
+        else if (!append_format(buffer,
+                                capacity,
+                                used,
+                                "%c",
+                                (int)*cursor)) {
+            return false;
+        }
+    }
+    return append_format(buffer, capacity, used, "\"");
+}
 
 static esp_err_t index_get_handler(httpd_req_t *request)
 {
     httpd_resp_set_type(request, "text/html; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_send(request, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(request,
+                           http_capture_dashboard_html(),
+                           HTTPD_RESP_USE_STRLEN);
 }
 
 static bool frame_is_valid_jpeg(const camera_fb_t *frame)
@@ -223,6 +248,166 @@ static esp_err_t status_get_handler(httpd_req_t *request)
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     return httpd_resp_send(request, response, length);
+}
+
+static esp_err_t inference_metadata_get_handler(httpd_req_t *request)
+{
+    inference_snapshot_metadata_t metadata = {0};
+    const esp_err_t metadata_err =
+        inference_get_latest_metadata(&metadata);
+
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (metadata_err == ESP_ERR_NOT_FOUND) {
+        return httpd_resp_sendstr(request, "{\"ready\":false}");
+    }
+    if (metadata_err != ESP_OK || !metadata.ready ||
+        metadata.label_count > INFERENCE_MAX_LABELS) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Inference metadata unavailable");
+    }
+
+    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    const uint64_t age_ms = now_ms >= metadata.published_ms
+                                ? now_ms - metadata.published_ms
+                                : 0U;
+    char response[1536] = {0};
+    size_t used = 0;
+    bool valid = append_format(response,
+                               sizeof(response),
+                               &used,
+                               "{\"ready\":true,\"sequence\":%" PRIu32
+                               ",\"prediction\":",
+                               metadata.sequence);
+    valid = valid && append_json_string(response,
+                                        sizeof(response),
+                                        &used,
+                                        metadata.prediction);
+    valid = valid && append_format(
+        response,
+        sizeof(response),
+        &used,
+        ",\"confidence\":%.5f,\"published_ms\":%" PRIu64
+        ",\"age_ms\":%" PRIu64 ",\"jpeg_bytes\":%u,"
+        "\"timing\":{\"dsp_ms\":%d,\"classification_ms\":%d,"
+        "\"anomaly_ms\":%d},\"scores\":[",
+        (double)metadata.confidence,
+        metadata.published_ms,
+        age_ms,
+        (unsigned int)metadata.jpeg_bytes,
+        metadata.timing.dsp_ms,
+        metadata.timing.classification_ms,
+        metadata.timing.anomaly_ms);
+
+    for (size_t index = 0; valid && index < metadata.label_count; ++index) {
+        valid = append_format(response,
+                              sizeof(response),
+                              &used,
+                              "%s{\"label\":",
+                              index == 0 ? "" : ",");
+        valid = valid && append_json_string(response,
+                                            sizeof(response),
+                                            &used,
+                                            metadata.scores[index].label);
+        valid = valid && append_format(response,
+                                       sizeof(response),
+                                       &used,
+                                       ",\"value\":%.5f}",
+                                       (double)metadata.scores[index].value);
+    }
+    valid = valid && append_format(response, sizeof(response), &used, "]}");
+    if (!valid) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Inference response overflow");
+    }
+    return httpd_resp_send(request, response, (long)used);
+}
+
+static esp_err_t send_inference_image_error(httpd_req_t *request,
+                                            const char *status,
+                                            const char *message)
+{
+    httpd_resp_set_status(request, status);
+    httpd_resp_set_type(request, "text/plain; charset=utf-8");
+    return httpd_resp_sendstr(request, message);
+}
+
+static bool parse_inference_sequence(httpd_req_t *request,
+                                     uint32_t *sequence)
+{
+    static const char prefix[] = "sequence=";
+    char query[48];
+    const size_t query_length = httpd_req_get_url_query_len(request);
+    if (sequence == NULL || query_length == 0U ||
+        query_length >= sizeof(query) ||
+        httpd_req_get_url_query_str(request,
+                                    query,
+                                    sizeof(query)) != ESP_OK ||
+        strncmp(query, prefix, sizeof(prefix) - 1U) != 0) {
+        return false;
+    }
+
+    const char *value = query + sizeof(prefix) - 1U;
+    if (*value == '\0') {
+        return false;
+    }
+    for (const char *cursor = value; *cursor != '\0'; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+    }
+
+    errno = 0;
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed > UINT32_MAX) {
+        return false;
+    }
+    *sequence = (uint32_t)parsed;
+    return true;
+}
+
+static esp_err_t inference_image_get_handler(httpd_req_t *request)
+{
+    uint32_t sequence = 0;
+    if (!parse_inference_sequence(request, &sequence)) {
+        return send_inference_image_error(request,
+                                          HTTPD_400,
+                                          "Invalid inference sequence");
+    }
+
+    size_t jpeg_bytes = 0;
+    const esp_err_t copy_err = inference_copy_latest_jpeg(
+        sequence,
+        s_inference_response_buffer,
+        INFERENCE_MAX_JPEG_BYTES,
+        &jpeg_bytes);
+    if (copy_err == ESP_ERR_NOT_FOUND) {
+        return send_inference_image_error(request,
+                                          HTTP_STATUS_SERVICE_UNAVAILABLE,
+                                          "Inference snapshot not ready");
+    }
+    if (copy_err == ESP_ERR_INVALID_STATE) {
+        return send_inference_image_error(request,
+                                          HTTP_STATUS_CONFLICT,
+                                          "Inference sequence is stale");
+    }
+    if (copy_err != ESP_OK) {
+        return send_inference_image_error(request,
+                                          HTTPD_500,
+                                          "Inference snapshot unavailable");
+    }
+
+    char sequence_header[12];
+    snprintf(sequence_header, sizeof(sequence_header), "%" PRIu32, sequence);
+    httpd_resp_set_type(request, "image/jpeg");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "X-Inference-Sequence", sequence_header);
+    return httpd_resp_send(request,
+                           (const char *)s_inference_response_buffer,
+                           (long)jpeg_bytes);
 }
 
 static esp_err_t capture_get_handler(httpd_req_t *request)
@@ -411,6 +596,18 @@ static esp_err_t register_control_handlers(httpd_handle_t server)
         .handler = status_get_handler,
         .user_ctx = NULL,
     };
+    const httpd_uri_t inference_uri = {
+        .uri = "/api/inference",
+        .method = HTTP_GET,
+        .handler = inference_metadata_get_handler,
+        .user_ctx = NULL,
+    };
+    const httpd_uri_t inference_image_uri = {
+        .uri = "/api/inference/image",
+        .method = HTTP_GET,
+        .handler = inference_image_get_handler,
+        .user_ctx = NULL,
+    };
 
     esp_err_t err = httpd_register_uri_handler(server, &index_uri);
     if (err == ESP_OK) {
@@ -418,6 +615,12 @@ static esp_err_t register_control_handlers(httpd_handle_t server)
     }
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &status_uri);
+    }
+    if (err == ESP_OK) {
+        err = httpd_register_uri_handler(server, &inference_uri);
+    }
+    if (err == ESP_OK) {
+        err = httpd_register_uri_handler(server, &inference_image_uri);
     }
     return err;
 }
@@ -453,6 +656,15 @@ static esp_err_t stop_server(httpd_handle_t *server, const char *description)
     return ESP_OK;
 }
 
+static void release_inference_buffer_if_stopped(void)
+{
+    if (s_control_server == NULL && s_stream_server == NULL &&
+        s_inference_response_buffer != NULL) {
+        heap_caps_free(s_inference_response_buffer);
+        s_inference_response_buffer = NULL;
+    }
+}
+
 esp_err_t http_capture_start(void)
 {
     if (s_control_server != NULL &&
@@ -464,6 +676,16 @@ esp_err_t http_capture_start(void)
         http_capture_stop();
         if (s_control_server != NULL || s_stream_server != NULL) {
             return ESP_FAIL;
+        }
+    }
+
+    if (s_inference_response_buffer == NULL) {
+        s_inference_response_buffer = heap_caps_malloc(
+            INFERENCE_MAX_JPEG_BYTES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_inference_response_buffer == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate inference HTTP JPEG buffer");
+            return ESP_ERR_NO_MEM;
         }
     }
 
@@ -480,6 +702,7 @@ esp_err_t http_capture_start(void)
         ESP_LOGE(TAG,
                  "HTTP server startup failed: %s",
                  esp_err_to_name(err));
+        release_inference_buffer_if_stopped();
         return err;
     }
 
@@ -489,6 +712,7 @@ esp_err_t http_capture_start(void)
                  "HTTP handler registration failed: %s",
                  esp_err_to_name(err));
         stop_server(&s_control_server, "HTTP server");
+        release_inference_buffer_if_stopped();
         return err;
     }
 
@@ -511,6 +735,7 @@ esp_err_t http_capture_start(void)
                  esp_err_to_name(err));
         stop_server(&s_stream_server, "MJPEG stream server");
         stop_server(&s_control_server, "HTTP server");
+        release_inference_buffer_if_stopped();
         return err;
     }
 
@@ -530,4 +755,5 @@ void http_capture_stop(void)
 
     stop_server(&s_stream_server, "MJPEG stream server");
     stop_server(&s_control_server, "HTTP server");
+    release_inference_buffer_if_stopped();
 }
