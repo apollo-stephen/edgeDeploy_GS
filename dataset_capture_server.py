@@ -16,209 +16,13 @@ from dataset_capture import (
     DEFAULT_INTERVAL_MS,
     Esp32Client,
 )
+from dataset_capture_page import render_capture_page
 
 
 MAX_REQUEST_BODY_BYTES = 4096
 RECENT_CAPTURE_PATH = re.compile(
     r"^/api/captures/([0-9a-f]{32})/([1-9][0-9]*)$"
 )
-
-INDEX_HTML_TEMPLATE = """<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ESP32 数据集采集</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
-    main { display: grid; gap: 1rem; }
-    #preview { width:128px;height:128px; image-rendering: pixelated; background: #ddd; }
-    label { display: grid; gap: .25rem; }
-    input, button { font: inherit; padding: .5rem; }
-    dl { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem; }
-    dt { font-weight: 600; }
-    dd { margin: 0; overflow-wrap: anywhere; }
-    #lastError { color: #b42318; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>ESP32 数据集采集</h1>
-    <img id="preview" width="128" height="128" alt="摄像头预览">
-    <label>数据集名称
-      <input id="datasetName" maxlength="64" autocomplete="off">
-    </label>
-    <label>拍照间隔（毫秒）
-      <input id="intervalMs" type="number" min="200" max="60000" value="__DEFAULT_INTERVAL_MS__">
-    </label>
-    <div>
-      <button id="startButton" type="button" disabled>开始连续拍照</button>
-      <button id="stopButton" type="button" disabled>停止并保存</button>
-    </div>
-    <dl>
-      <dt>运行状态</dt><dd id="runningState">读取中</dd>
-      <dt>已保存</dt><dd id="savedCount">0</dd>
-      <dt>失败数</dt><dd id="failedCount">0</dd>
-      <dt>最新文件</dt><dd id="latestFile">—</dd>
-      <dt>最后错误</dt><dd id="lastError">—</dd>
-    </dl>
-  </main>
-  <script>
-    const streamUrl = __STREAM_URL__;
-    const preview = document.getElementById("preview");
-    const datasetName = document.getElementById("datasetName");
-    const intervalMs = document.getElementById("intervalMs");
-    const startButton = document.getElementById("startButton");
-    const stopButton = document.getElementById("stopButton");
-    const runningState = document.getElementById("runningState");
-    const savedCount = document.getElementById("savedCount");
-    const failedCount = document.getElementById("failedCount");
-    const latestFile = document.getElementById("latestFile");
-    const lastError = document.getElementById("lastError");
-    let transition = "initializing";
-    let refreshGeneration = 0;
-    let previewConnected = false;
-
-    startButton.disabled = true;
-    stopButton.disabled = true;
-
-    function stopPreview() {
-      preview.removeAttribute("src");
-      previewConnected = false;
-    }
-
-    function startPreview() {
-      if (previewConnected) {
-        return;
-      }
-      preview.src = `${streamUrl}?t=${Date.now()}`;
-      previewConnected = true;
-    }
-
-    async function requestJson(path, options = {}) {
-      const response = await fetch(path, {
-        cache: "no-store",
-        headers: {"Content-Type": "application/json"},
-        ...options,
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result.error || `请求失败 (${response.status})`);
-      }
-      return result;
-    }
-
-    function renderStatus(state) {
-      runningState.textContent = state.running ? "采集中" : "已停止";
-      savedCount.textContent = state.saved_count;
-      failedCount.textContent = state.failed_count;
-      latestFile.textContent = state.latest_file || "—";
-      lastError.textContent = state.last_error || "—";
-      if (state.running) {
-        stopPreview();
-      } else if (transition === "idle") {
-        startPreview();
-      }
-      if (transition === "idle") {
-        startButton.disabled = state.running;
-        stopButton.disabled = !state.running;
-      } else {
-        startButton.disabled = true;
-        stopButton.disabled = true;
-      }
-    }
-
-    async function refreshStatus() {
-      const generation = ++refreshGeneration;
-      const state = await requestJson("/api/status");
-      if (generation !== refreshGeneration ||
-          transition === "starting" ||
-          transition === "stopping") {
-        return null;
-      }
-      renderStatus(state);
-      return state;
-    }
-
-    async function synchronizeStatus() {
-      try {
-        const state = await refreshStatus();
-        if (state === null) {
-          return null;
-        }
-        if (transition === "initializing") {
-          transition = "idle";
-          renderStatus(state);
-          if (!state.running) {
-            startPreview();
-          }
-        }
-        return state;
-      } catch (error) {
-        stopPreview();
-        startButton.disabled = true;
-        stopButton.disabled = true;
-        lastError.textContent = error.message;
-        return null;
-      }
-    }
-
-    startButton.addEventListener("click", async () => {
-      transition = "starting";
-      refreshGeneration += 1;
-      startButton.disabled = true;
-      stopButton.disabled = true;
-      stopPreview();
-      await new Promise(resolve => setTimeout(resolve, 200));
-      try {
-        const state = await requestJson("/api/capture/start", {
-          method: "POST",
-          body: JSON.stringify({
-            dataset_name: datasetName.value,
-            interval_ms: Number(intervalMs.value),
-          }),
-        });
-        transition = "idle";
-        refreshGeneration += 1;
-        renderStatus(state);
-      } catch (error) {
-        transition = "initializing";
-        refreshGeneration += 1;
-        await synchronizeStatus();
-        lastError.textContent = error.message;
-      }
-    });
-
-    stopButton.addEventListener("click", async () => {
-      transition = "stopping";
-      refreshGeneration += 1;
-      startButton.disabled = true;
-      stopButton.disabled = true;
-      try {
-        const state = await requestJson("/api/capture/stop", {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-        transition = "idle";
-        refreshGeneration += 1;
-        renderStatus(state);
-        startPreview();
-      } catch (error) {
-        transition = "initializing";
-        refreshGeneration += 1;
-        await synchronizeStatus();
-        lastError.textContent = error.message;
-      }
-    });
-
-    synchronizeStatus()
-      .finally(() => {
-        setInterval(synchronizeStatus, 500);
-      });
-  </script>
-</body>
-</html>
-"""
 
 
 def _stream_url(device_url: str) -> str:
@@ -242,13 +46,10 @@ def create_server(
         data_root,
         Esp32Client(device_url),
     )
-    index_html = INDEX_HTML_TEMPLATE.replace(
-        "__STREAM_URL__",
-        json.dumps(_stream_url(device_url)),
-    ).replace(
-        "__DEFAULT_INTERVAL_MS__",
-        str(DEFAULT_INTERVAL_MS),
-    ).encode("utf-8")
+    index_html = render_capture_page(
+        _stream_url(device_url),
+        DEFAULT_INTERVAL_MS,
+    )
 
     class DatasetCaptureRequestHandler(BaseHTTPRequestHandler):
         def _send_json(self, status: int, value: dict[str, object]) -> None:

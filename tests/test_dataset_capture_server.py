@@ -121,8 +121,13 @@ class DatasetCaptureServerTest(unittest.TestCase):
         self.assertIn("开始连续拍照", page)
         self.assertIn("停止并保存", page)
         self.assertIn("数据集名称", page)
+        self.assertIn('class="visual-grid"', page)
         self.assertIn('id="preview"', page)
-        self.assertIn("width:128px;height:128px", page)
+        self.assertIn('id="previewStatus"', page)
+        self.assertIn('id="latestCapture"', page)
+        self.assertIn('id="recentGallery"', page)
+        self.assertIn('aria-label="最近保存的图片"', page)
+        self.assertIn("@media (max-width: 700px)", page)
         self.assertIn('id="datasetName" maxlength="64"', page)
         self.assertIn('id="intervalMs" type="number"', page)
         self.assertIn('min="200" max="60000" value="500"', page)
@@ -132,11 +137,12 @@ class DatasetCaptureServerTest(unittest.TestCase):
             'const streamUrl = "http://192.168.4.1:81/stream";',
             page,
         )
-        self.assertIn('preview.removeAttribute("src");', page)
         self.assertIn('preview.src = `${streamUrl}?t=${Date.now()}`;', page)
         self.assertIn("setInterval(synchronizeStatus, 500)", page)
+        self.assertNotIn('preview.removeAttribute("src")', page)
+        self.assertNotIn("setTimeout(resolve, 200)", page)
 
-    def test_deferred_status_and_start_conflict_keep_preview_disconnected(self):
+    def test_start_stop_and_status_transitions_keep_preview_connected(self):
         _, _, _, body = self.request("GET", "/")
         script = re.search(
             r"<script>(.*)</script>",
@@ -154,9 +160,24 @@ class DatasetCaptureServerTest(unittest.TestCase):
                 textContent: "",
                 value: id === "datasetName" ? "wet" : "500",
                 listeners: {},
-                removeAttribute(name) { delete this[name]; },
+                sourceAssignments: 0,
+                sourceRemovals: 0,
+                sourceValue: undefined,
+                removeAttribute(name) {
+                  if (name === "src") {
+                    this.sourceRemovals += 1;
+                    this.sourceValue = undefined;
+                  }
+                },
                 addEventListener(name, listener) { this.listeners[name] = listener; },
               };
+              Object.defineProperty(value, "src", {
+                get() { return this.sourceValue; },
+                set(source) {
+                  this.sourceAssignments += 1;
+                  this.sourceValue = source;
+                },
+              });
               elements.set(id, value);
               return value;
             }
@@ -167,40 +188,46 @@ class DatasetCaptureServerTest(unittest.TestCase):
             let intervalCallback;
             global.setInterval = callback => { intervalCallback = callback; };
 
-            function response(ok, status, value) {
-              return {ok, status, async json() { return value; }};
+            function response(value) {
+              return {ok: true, status: 200, async json() { return value; }};
             }
             let resolveInitial;
-            let resolveStart;
-            let statusCalls = 0;
-            global.fetch = (path, options = {}) => {
+            let initialRequested = false;
+            let running = false;
+            global.fetch = path => {
               if (path === "/api/status") {
-                statusCalls += 1;
-                if (statusCalls === 1) {
+                if (!initialRequested) {
+                  initialRequested = true;
                   return new Promise(resolve => {
-                    resolveInitial = () => resolve(response(true, 200, {
-                      running: false, saved_count: 0, failed_count: 0,
+                    resolveInitial = () => resolve(response({
+                      running, saved_count: 0, failed_count: 0,
                       latest_file: null, last_error: null,
+                      session_token: null, recent_captures: [],
                     }));
                   });
                 }
-                if (statusCalls === 2) {
-                  return Promise.resolve(response(true, 200, {
-                    running: false, saved_count: 0, failed_count: 0,
-                    latest_file: null, last_error: null,
-                  }));
-                }
-                return Promise.resolve(response(true, 200, {
-                  running: true, saved_count: 0, failed_count: 0,
-                  latest_file: null, last_error: null,
+                return Promise.resolve(response({
+                  running, saved_count: running ? 0 : 1, failed_count: 0,
+                  latest_file: running ? null : "saved.jpg", last_error: null,
+                  session_token: running ? "a".repeat(32) : null,
+                  recent_captures: [],
                 }));
               }
               if (path === "/api/capture/start") {
-                return new Promise(resolve => {
-                  resolveStart = () => resolve(response(false, 409, {
-                    error: "already running",
-                  }));
-                });
+                running = true;
+                return Promise.resolve(response({
+                  running, saved_count: 0, failed_count: 0,
+                  latest_file: null, last_error: null,
+                  session_token: "a".repeat(32), recent_captures: [],
+                }));
+              }
+              if (path === "/api/capture/stop") {
+                running = false;
+                return Promise.resolve(response({
+                  running, saved_count: 1, failed_count: 0,
+                  latest_file: "saved.jpg", last_error: null,
+                  session_token: "a".repeat(32), recent_captures: [],
+                }));
               }
               throw new Error(`unexpected request: ${path}`);
             };
@@ -216,30 +243,29 @@ class DatasetCaptureServerTest(unittest.TestCase):
               const previewElement = elements.get("preview");
               const startElement = elements.get("startButton");
               const stopElement = elements.get("stopButton");
-              assert.equal(startElement.disabled, true);
-              assert.equal(stopElement.disabled, true);
-              assert.equal(previewElement.src, undefined);
+              assert.match(previewElement.src, /^http:\\/\\/192\\.168\\.4\\.1:81\\/stream\\?t=/);
+              assert.equal(previewElement.sourceAssignments, 1);
+              assert.equal(previewElement.sourceRemovals, 0);
 
               resolveInitial();
               await drain();
               assert.equal(startElement.disabled, false);
-              assert.match(previewElement.src, /^http:\\/\\/192\\.168\\.4\\.1:81\\/stream\\?t=/);
 
-              const click = startElement.listeners.click();
-              await drain();
-              assert.equal(previewElement.src, undefined);
+              await startElement.listeners.click();
               await intervalCallback();
               await drain();
               assert.equal(startElement.disabled, true);
-              assert.equal(previewElement.src, undefined);
-
-              resolveStart();
-              await click;
-              await drain();
-              assert.equal(startElement.disabled, true);
               assert.equal(stopElement.disabled, false);
-              assert.equal(previewElement.src, undefined);
-              assert.equal(elements.get("lastError").textContent, "already running");
+              assert.equal(previewElement.sourceAssignments, 1);
+              assert.equal(previewElement.sourceRemovals, 0);
+
+              await stopElement.listeners.click();
+              await intervalCallback();
+              await drain();
+              assert.equal(startElement.disabled, false);
+              assert.equal(stopElement.disabled, true);
+              assert.equal(previewElement.sourceAssignments, 1);
+              assert.equal(previewElement.sourceRemovals, 0);
             })().catch(error => {
               console.error(error);
               process.exitCode = 1;
@@ -258,7 +284,7 @@ class DatasetCaptureServerTest(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
 
-    def test_automatic_capture_stop_reconnects_preview_exactly_once(self):
+    def test_preview_errors_schedule_only_one_reconnect(self):
         _, _, _, body = self.request("GET", "/")
         script = re.search(
             r"<script>(.*)</script>",
@@ -298,23 +324,22 @@ class DatasetCaptureServerTest(unittest.TestCase):
             global.document = {
               getElementById(id) { return elements.get(id) || element(id); },
             };
-            global.setTimeout = callback => queueMicrotask(callback);
-            let intervalCallback;
-            global.setInterval = callback => { intervalCallback = callback; };
+            const timers = [];
+            global.setTimeout = (callback, milliseconds) => {
+              timers.push({callback, milliseconds});
+              return timers.length;
+            };
+            global.setInterval = () => {};
 
             function response(value) {
               return {ok: true, status: 200, async json() { return value; }};
             }
-            let statusCalls = 0;
             global.fetch = path => {
               assert.equal(path, "/api/status");
-              statusCalls += 1;
               return Promise.resolve(response({
-                running: statusCalls === 1,
-                saved_count: statusCalls === 1 ? 2 : 3,
-                failed_count: statusCalls === 1 ? 4 : 5,
-                latest_file: null,
-                last_error: statusCalls === 1 ? null : "连续 5 张采集失败",
+                running: false, saved_count: 0, failed_count: 0,
+                latest_file: null, last_error: null,
+                session_token: null, recent_captures: [],
               }));
             };
             """
@@ -327,21 +352,20 @@ class DatasetCaptureServerTest(unittest.TestCase):
             }
             (async () => {
               const previewElement = elements.get("preview");
-              await drain();
-              assert.equal(previewElement.src, undefined);
-              assert.equal(previewElement.sourceAssignments, 0);
-
-              await intervalCallback();
-              await drain();
-              assert.match(
-                previewElement.src,
-                /^http:\\/\\/192\\.168\\.4\\.1:81\\/stream\\?t=/,
-              );
-              assert.equal(previewElement.sourceAssignments, 1);
-
-              await intervalCallback();
+              const statusElement = elements.get("previewStatus");
               await drain();
               assert.equal(previewElement.sourceAssignments, 1);
+
+              previewElement.listeners.error();
+              previewElement.listeners.error();
+              assert.equal(timers.length, 1);
+              assert.equal(timers[0].milliseconds, 1000);
+              assert.equal(statusElement.textContent, "直播断开，正在重连");
+
+              timers[0].callback();
+              assert.equal(previewElement.sourceAssignments, 2);
+              previewElement.listeners.load();
+              assert.equal(statusElement.textContent, "直播中");
             })().catch(error => {
               console.error(error);
               process.exitCode = 1;
