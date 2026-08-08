@@ -114,18 +114,17 @@ Image preview ready at http://192.168.4.1/
 2. Losing normal internet access while connected to this standalone AP is
    expected.
 3. Open `http://192.168.4.1/`.
-4. The left panel shows the native MJPEG live preview. The right panel updates
-   with the exact JPEG used by the latest successful inference, while the
-   result section below shows its prediction, dynamic label scores, timing,
-   sequence, and update age.
-5. Pause the live preview when it is not needed. Press **Capture now** to
-   request a separate single JPEG frame.
+4. The left panel starts the native MJPEG live preview automatically. The right
+   panel shows the latest successfully decoded JPEG used by inference.
+5. Prediction, dynamic label scores, timing, sequence, and update age refresh
+   from inference metadata even if the right-hand JPEG is temporarily unavailable.
 
 The dashboard polls inference metadata once per second and requests the JPEG by
-sequence. It replaces the displayed image-result pair only after the response
-sequence matches, so a live frame is never mislabeled as the classified frame.
-Transient HTTP or camera failures leave the previous complete pair visible.
-The CAMERA component serializes frame ownership.
+sequence. Metadata and snapshot publication are independent: a matching,
+successfully decoded JPEG replaces the right-hand image, while image failures
+leave the previous snapshot visible and retry on the next poll. The live preview
+reconnects automatically after a stream error. The CAMERA component serializes
+frame ownership.
 
 Direct endpoints:
 
