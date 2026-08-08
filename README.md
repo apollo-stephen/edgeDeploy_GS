@@ -43,14 +43,16 @@ HTTP capture and inference cannot hold the same camera frame concurrently.
 Each iteration:
 
 1. Acquires a 128x128 JPEG frame with a 250 ms timeout.
-2. Decodes the frame into a 49,152-byte RGB888 buffer in PSRAM.
-3. Releases the camera frame before running the classifier.
-4. Converts RGB pixels to the Edge Impulse signal format and runs the INT8 EON
-   model.
+2. Decodes the frame into a 49,152-byte RGB888 capture buffer in PSRAM.
+3. Releases the camera frame, then downsizes the RGB image to a separate
+   27,648-byte 96x96 model buffer using the Edge Impulse export's configured
+   resize mode.
+4. Converts the resized pixels to the Edge Impulse signal format and runs the
+   deployment-version-2 INT8 EON model.
 5. Logs DSP/classification timing and probabilities for `harmful`,
    `recycleable`, and `wet`.
-6. Publishes the exact classified JPEG and versioned result metadata for the
-   local dashboard.
+6. Publishes the original 128x128 classified JPEG and versioned result metadata
+   for the local dashboard.
 
 The exported model label is spelled `recycleable`; logs preserve that exact
 model label. If the highest probability is below the exported threshold of
@@ -66,10 +68,12 @@ I (...) inference: wet: 0.08643
 I (...) inference: Prediction: recycleable (0.90123)
 ```
 
-The model allocates a roughly 346 KB tensor arena. `sdkconfig.defaults` enables
-Octal PSRAM and routes large heap allocations there. The application uses a
-custom 4 MB factory partition because the Edge Impulse SDK and generated model
-do not fit the default 1 MB application partition.
+The active `modev2` deployment allocates an approximately 126 KB tensor arena.
+`sdkconfig.defaults` enables Octal PSRAM and routes large heap allocations
+there. The application uses a custom 4 MB factory partition because the Edge
+Impulse SDK and generated model do not fit the default 1 MB application
+partition. `modev1` remains in the repository for rollback, but it is not part
+of the active build.
 
 ## Configure the SoftAP
 
