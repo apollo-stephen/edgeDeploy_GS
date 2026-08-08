@@ -6,6 +6,7 @@
 
 #include "CAMERA.h"
 #include "edge-impulse-sdk/classifier/ei_run_classifier.h"
+#include "edge-impulse-sdk/dsp/image/processing.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -21,9 +22,14 @@ constexpr uint32_t kInferencePeriodMs = 2000;
 constexpr configSTACK_DEPTH_TYPE kTaskStackBytes = 8192;
 constexpr UBaseType_t kTaskPriority = 5;
 constexpr BaseType_t kTaskCoreId = 1;
-constexpr size_t kRgbBufferBytes =
+constexpr size_t kCaptureRgbBufferBytes =
+    CAMERA_FRAME_WIDTH * CAMERA_FRAME_HEIGHT * 3U;
+constexpr size_t kModelRgbBufferBytes =
     EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3U;
 
+static_assert(EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE ==
+                  EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT,
+              "Image signal length must match model dimensions");
 static_assert(EI_CLASSIFIER_LABEL_COUNT <= INFERENCE_MAX_LABELS,
               "Model label count exceeds inference snapshot capacity");
 static_assert(INFERENCE_MAX_JPEG_BYTES == CAMERA_MAX_JPEG_BYTES,
@@ -32,7 +38,8 @@ static_assert(INFERENCE_MAX_JPEG_BYTES == CAMERA_MAX_JPEG_BYTES,
 const char *const kUncertainLabel = "uncertain";
 const char *const TAG = "inference";
 
-uint8_t *s_rgb_buffer;
+uint8_t *s_capture_rgb_buffer;
+uint8_t *s_model_rgb_buffer;
 uint8_t *s_staging_jpeg;
 uint8_t *s_published_jpeg;
 SemaphoreHandle_t s_snapshot_mutex;
@@ -49,9 +56,13 @@ void release_resources()
         heap_caps_free(s_staging_jpeg);
         s_staging_jpeg = nullptr;
     }
-    if (s_rgb_buffer != nullptr) {
-        heap_caps_free(s_rgb_buffer);
-        s_rgb_buffer = nullptr;
+    if (s_model_rgb_buffer != nullptr) {
+        heap_caps_free(s_model_rgb_buffer);
+        s_model_rgb_buffer = nullptr;
+    }
+    if (s_capture_rgb_buffer != nullptr) {
+        heap_caps_free(s_capture_rgb_buffer);
+        s_capture_rgb_buffer = nullptr;
     }
     if (s_snapshot_mutex != nullptr) {
         vSemaphoreDelete(s_snapshot_mutex);
@@ -75,7 +86,7 @@ bool copy_label(char destination[INFERENCE_LABEL_BYTES], const char *source)
 
 int get_signal_data(size_t offset, size_t length, float *out_ptr)
 {
-    if (out_ptr == nullptr || s_rgb_buffer == nullptr ||
+    if (out_ptr == nullptr || s_model_rgb_buffer == nullptr ||
         offset > EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE ||
         length > EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE - offset) {
         return -1;
@@ -83,9 +94,9 @@ int get_signal_data(size_t offset, size_t length, float *out_ptr)
 
     for (size_t index = 0; index < length; ++index) {
         const size_t pixel_offset = (offset + index) * 3U;
-        const uint32_t red = s_rgb_buffer[pixel_offset];
-        const uint32_t green = s_rgb_buffer[pixel_offset + 1U];
-        const uint32_t blue = s_rgb_buffer[pixel_offset + 2U];
+        const uint32_t red = s_model_rgb_buffer[pixel_offset];
+        const uint32_t green = s_model_rgb_buffer[pixel_offset + 1U];
+        const uint32_t blue = s_model_rgb_buffer[pixel_offset + 2U];
         out_ptr[index] = static_cast<float>((red << 16U) |
                                             (green << 8U) |
                                             blue);
@@ -96,8 +107,8 @@ int get_signal_data(size_t offset, size_t length, float *out_ptr)
 bool frame_is_valid(const camera_fb_t *frame)
 {
     return frame != nullptr && frame->buf != nullptr && frame->len > 0 &&
-           frame->width == EI_CLASSIFIER_INPUT_WIDTH &&
-           frame->height == EI_CLASSIFIER_INPUT_HEIGHT &&
+           frame->width == CAMERA_FRAME_WIDTH &&
+           frame->height == CAMERA_FRAME_HEIGHT &&
            frame->format == PIXFORMAT_JPEG;
 }
 
@@ -188,13 +199,24 @@ extern "C" esp_err_t inference_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_rgb_buffer = static_cast<uint8_t *>(
-        heap_caps_malloc(kRgbBufferBytes,
+    s_capture_rgb_buffer = static_cast<uint8_t *>(
+        heap_caps_malloc(kCaptureRgbBufferBytes,
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (s_rgb_buffer == nullptr) {
+    if (s_capture_rgb_buffer == nullptr) {
         ESP_LOGE(TAG,
-                 "Failed to allocate %u-byte RGB888 buffer in PSRAM",
-                 static_cast<unsigned int>(kRgbBufferBytes));
+                 "Failed to allocate %u-byte capture RGB888 buffer in PSRAM",
+                 static_cast<unsigned int>(kCaptureRgbBufferBytes));
+        release_resources();
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_model_rgb_buffer = static_cast<uint8_t *>(
+        heap_caps_malloc(kModelRgbBufferBytes,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (s_model_rgb_buffer == nullptr) {
+        ESP_LOGE(TAG,
+                 "Failed to allocate %u-byte model RGB888 buffer in PSRAM",
+                 static_cast<unsigned int>(kModelRgbBufferBytes));
         release_resources();
         return ESP_ERR_NO_MEM;
     }
@@ -239,7 +261,8 @@ extern "C" esp_err_t inference_start(void)
 
 extern "C" esp_err_t inference_run_once(void)
 {
-    if (!s_started || s_rgb_buffer == nullptr) {
+    if (!s_started || s_capture_rgb_buffer == nullptr ||
+        s_model_rgb_buffer == nullptr) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -250,7 +273,10 @@ extern "C" esp_err_t inference_run_once(void)
     }
 
     if (!frame_is_valid(frame)) {
-        ESP_LOGE(TAG, "Captured frame is not a valid 128x128 JPEG");
+        ESP_LOGE(TAG,
+                 "Captured frame is not a valid %ux%u JPEG",
+                 static_cast<unsigned int>(CAMERA_FRAME_WIDTH),
+                 static_cast<unsigned int>(CAMERA_FRAME_HEIGHT));
         camera_release_frame(frame);
         return ESP_ERR_INVALID_ARG;
     }
@@ -269,10 +295,31 @@ extern "C" esp_err_t inference_run_once(void)
     const bool decoded = fmt2rgb888(frame->buf,
                                     frame->len,
                                     frame->format,
-                                    s_rgb_buffer);
+                                    s_capture_rgb_buffer);
     camera_release_frame(frame);
     if (!decoded) {
         ESP_LOGE(TAG, "JPEG to RGB888 conversion failed");
+        return ESP_FAIL;
+    }
+
+    const int resize_result =
+        ei::image::processing::resize_image_using_mode(
+            s_capture_rgb_buffer,
+            CAMERA_FRAME_WIDTH,
+            CAMERA_FRAME_HEIGHT,
+            s_model_rgb_buffer,
+            EI_CLASSIFIER_INPUT_WIDTH,
+            EI_CLASSIFIER_INPUT_HEIGHT,
+            3,
+            EI_CLASSIFIER_RESIZE_MODE);
+    if (resize_result != 0) {
+        ESP_LOGE(TAG,
+                 "RGB resize %ux%u to %ux%u failed: %d",
+                 static_cast<unsigned int>(CAMERA_FRAME_WIDTH),
+                 static_cast<unsigned int>(CAMERA_FRAME_HEIGHT),
+                 static_cast<unsigned int>(EI_CLASSIFIER_INPUT_WIDTH),
+                 static_cast<unsigned int>(EI_CLASSIFIER_INPUT_HEIGHT),
+                 resize_result);
         return ESP_FAIL;
     }
 

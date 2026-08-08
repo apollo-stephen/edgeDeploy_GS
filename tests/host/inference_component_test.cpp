@@ -11,6 +11,7 @@
 
 #include "CAMERA.h"
 #include "edge-impulse-sdk/classifier/ei_run_classifier.h"
+#include "edge-impulse-sdk/dsp/image/processing.hpp"
 #include "esp_heap_caps.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -35,6 +36,17 @@ static int s_release_calls;
 static uint32_t s_capture_timeout;
 static bool s_decode_result = true;
 static int s_decode_calls;
+static uint8_t *s_decode_destination;
+static int s_resize_calls;
+static int s_resize_result;
+static const uint8_t *s_resize_source;
+static uint8_t *s_resize_destination;
+static int s_resize_source_width;
+static int s_resize_source_height;
+static int s_resize_destination_width;
+static int s_resize_destination_height;
+static int s_resize_pixel_size;
+static int s_resize_mode;
 static int s_allocation_calls;
 static int s_fail_allocation_call;
 static std::vector<size_t> s_allocation_sizes;
@@ -100,13 +112,46 @@ extern "C" bool fmt2rgb888(const uint8_t *source,
         return false;
     }
 
-    memset(destination, 0, EI_CLASSIFIER_INPUT_WIDTH *
-                               EI_CLASSIFIER_INPUT_HEIGHT * 3U);
+    s_decode_destination = destination;
     destination[0] = 0x10;
     destination[1] = 0x20;
     destination[2] = 0x30;
     return true;
 }
+
+namespace ei { namespace image { namespace processing {
+int resize_image_using_mode(const uint8_t *src_image,
+                            int src_width,
+                            int src_height,
+                            uint8_t *dst_image,
+                            int dst_width,
+                            int dst_height,
+                            int pixel_size_bytes,
+                            int mode)
+{
+    ++s_resize_calls;
+    s_resize_source = src_image;
+    s_resize_destination = dst_image;
+    s_resize_source_width = src_width;
+    s_resize_source_height = src_height;
+    s_resize_destination_width = dst_width;
+    s_resize_destination_height = dst_height;
+    s_resize_pixel_size = pixel_size_bytes;
+    s_resize_mode = mode;
+    assert(s_release_calls == s_decode_calls);
+    if (s_resize_result != 0) {
+        return s_resize_result;
+    }
+
+    memset(dst_image,
+           0,
+           EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3U);
+    dst_image[0] = 0x40;
+    dst_image[1] = 0x50;
+    dst_image[2] = 0x60;
+    return 0;
+}
+}}}
 
 extern "C" void *heap_caps_malloc(size_t size, unsigned int capabilities)
 {
@@ -243,11 +288,13 @@ static void verify_start_success(void)
     assert(s_task_stack_depth == 8192);
     assert(s_task_priority == 5);
     assert(s_task_core_id == 1);
-    assert(s_allocation_calls == 3);
-    assert(s_allocation_sizes[0] == EI_CLASSIFIER_INPUT_WIDTH *
+    assert(s_allocation_calls == 4);
+    assert(s_allocation_sizes[0] == CAMERA_FRAME_WIDTH *
+                                        CAMERA_FRAME_HEIGHT * 3U);
+    assert(s_allocation_sizes[1] == EI_CLASSIFIER_INPUT_WIDTH *
                                         EI_CLASSIFIER_INPUT_HEIGHT * 3U);
-    assert(s_allocation_sizes[1] == INFERENCE_MAX_JPEG_BYTES);
     assert(s_allocation_sizes[2] == INFERENCE_MAX_JPEG_BYTES);
+    assert(s_allocation_sizes[3] == INFERENCE_MAX_JPEG_BYTES);
     for (unsigned int capabilities : s_allocation_caps) {
         assert((capabilities & MALLOC_CAP_SPIRAM) != 0);
         assert((capabilities & MALLOC_CAP_8BIT) != 0);
@@ -304,9 +351,18 @@ static void verify_success(void)
     assert(s_capture_timeout == 250);
     assert(s_release_calls == 1);
     assert(s_decode_calls == 1);
+    assert(s_decode_destination == s_resize_source);
+    assert(s_resize_source != s_resize_destination);
+    assert(s_resize_calls == 1);
+    assert(s_resize_source_width == CAMERA_FRAME_WIDTH);
+    assert(s_resize_source_height == CAMERA_FRAME_HEIGHT);
+    assert(s_resize_destination_width == EI_CLASSIFIER_INPUT_WIDTH);
+    assert(s_resize_destination_height == EI_CLASSIFIER_INPUT_HEIGHT);
+    assert(s_resize_pixel_size == 3);
+    assert(s_resize_mode == EI_CLASSIFIER_RESIZE_MODE);
     assert(s_classifier_calls == 1);
     assert(s_observed_pixels.size() == 2);
-    assert(s_observed_pixels[0] == 0x102030);
+    assert(s_observed_pixels[0] == 0x405060);
     assert(s_observed_pixels[1] == 0);
     assert(s_logs.find("recycleable") != std::string::npos);
     assert(s_logs.find("0.90000") != std::string::npos);
@@ -361,12 +417,12 @@ static void verify_task_failure(void)
     s_task_result = pdFAIL;
     assert(inference_start() == ESP_FAIL);
     assert(s_task_create_calls == 1);
-    assert(s_free_calls == 3);
+    assert(s_free_calls == 4);
     assert(s_mutex_delete_calls == 1);
     s_task_result = pdPASS;
     assert(inference_start() == ESP_OK);
     assert(s_task_create_calls == 2);
-    assert(s_allocation_calls == 6);
+    assert(s_allocation_calls == 8);
     puts("inference task failure rollback passed");
 }
 
@@ -416,6 +472,18 @@ static void verify_classifier_failure(void)
     puts("inference classifier failure passed");
 }
 
+static void verify_resize_failure(void)
+{
+    verify_start_success();
+    verify_first_success();
+    const int classifier_calls = s_classifier_calls;
+    s_resize_result = -7;
+    assert(inference_run_once() == ESP_FAIL);
+    assert(s_classifier_calls == classifier_calls);
+    verify_snapshot_unchanged(1);
+    puts("inference resize failure passed");
+}
+
 static void verify_uncertain(void)
 {
     verify_start_success();
@@ -441,14 +509,17 @@ int main(int argc, char **argv)
     else if (strcmp(argv[1], "mutex-failure") == 0) {
         verify_mutex_failure();
     }
-    else if (strcmp(argv[1], "no-memory-rgb") == 0) {
+    else if (strcmp(argv[1], "no-memory-capture-rgb") == 0) {
         verify_allocation_failure(1);
     }
-    else if (strcmp(argv[1], "no-memory-staging") == 0) {
+    else if (strcmp(argv[1], "no-memory-model-rgb") == 0) {
         verify_allocation_failure(2);
     }
-    else if (strcmp(argv[1], "no-memory-published") == 0) {
+    else if (strcmp(argv[1], "no-memory-staging") == 0) {
         verify_allocation_failure(3);
+    }
+    else if (strcmp(argv[1], "no-memory-published") == 0) {
+        verify_allocation_failure(4);
     }
     else if (strcmp(argv[1], "task-failure") == 0) {
         verify_task_failure();
@@ -464,6 +535,9 @@ int main(int argc, char **argv)
     }
     else if (strcmp(argv[1], "classifier-failure") == 0) {
         verify_classifier_failure();
+    }
+    else if (strcmp(argv[1], "resize-failure") == 0) {
+        verify_resize_failure();
     }
     else if (strcmp(argv[1], "uncertain") == 0) {
         verify_uncertain();
