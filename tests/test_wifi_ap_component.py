@@ -11,6 +11,16 @@ def read(relative_path: str) -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
+def read_sdkconfig_defaults() -> dict[str, str]:
+    assignments = {}
+    for raw_line in read("sdkconfig.defaults").splitlines():
+        line = raw_line.strip()
+        if line.startswith("CONFIG_") and "=" in line:
+            key, value = line.split("=", 1)
+            assignments[key] = value
+    return assignments
+
+
 def esp_log_calls(source: str) -> list[str]:
     return [
         match.group(0)
@@ -19,6 +29,17 @@ def esp_log_calls(source: str) -> list[str]:
 
 
 class WifiApComponentStructureTest(unittest.TestCase):
+    def test_project_defaults_preserve_softap_identity(self):
+        defaults = read_sdkconfig_defaults()
+        self.assertEqual(
+            '"ESP32S3-CAPTURE"', defaults.get("CONFIG_ESP_WIFI_SSID")
+        )
+        self.assertEqual(
+            '"12345678"', defaults.get("CONFIG_ESP_WIFI_PASSWORD")
+        )
+        self.assertEqual("1", defaults.get("CONFIG_ESP_WIFI_CHANNEL"))
+        self.assertEqual("1", defaults.get("CONFIG_ESP_MAX_STA_CONN"))
+
     def test_public_component_files_exist(self):
         self.assertTrue((ROOT / "components/WIFIAP/include/wifi_ap.h").is_file())
         self.assertTrue((ROOT / "components/WIFIAP/wifi_ap.c").is_file())

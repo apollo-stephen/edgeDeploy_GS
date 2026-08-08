@@ -84,7 +84,10 @@ idf.py menuconfig
 ```
 
 Under `Example Configuration`, set the SoftAP SSID, password, channel, and
-maximum station count. The defaults are `myssid` and `mypassword`.
+maximum station count. Project defaults in `sdkconfig.defaults` are SSID
+`ESP32S3-CAPTURE`, password `12345678`, channel 1, and one station. These
+values survive `idf.py set-target esp32s3`; use `menuconfig` only when a
+deliberate local override is required.
 
 ## Build, flash, and monitor
 

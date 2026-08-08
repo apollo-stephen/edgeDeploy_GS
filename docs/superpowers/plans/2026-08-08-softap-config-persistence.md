@@ -31,20 +31,31 @@
 - Consumes: ESP-IDF project defaults loaded by `idf.py set-target esp32s3` and `idf.py reconfigure`.
 - Produces: effective macros `CONFIG_ESP_WIFI_SSID`, `CONFIG_ESP_WIFI_PASSWORD`, `CONFIG_ESP_WIFI_CHANNEL`, and `CONFIG_ESP_MAX_STA_CONN` consumed by `components/WIFIAP/wifi_ap.c`.
 
-- [ ] **Step 1: Write the failing defaults regression test**
+- [x] **Step 1: Write the failing defaults regression test**
 
-Add this method to `WifiApComponentStructureTest` in `tests/test_wifi_ap_component.py`:
+Add a small parser next to the existing `read()` helper so the test verifies
+effective key/value assignments rather than grepping source text:
 
 ```python
+def read_sdkconfig_defaults() -> dict[str, str]:
+    assignments = {}
+    for raw_line in read("sdkconfig.defaults").splitlines():
+        line = raw_line.strip()
+        if line.startswith("CONFIG_") and "=" in line:
+            key, value = line.split("=", 1)
+            assignments[key] = value
+    return assignments
+
+
 def test_project_defaults_preserve_softap_identity(self):
-    defaults = read("sdkconfig.defaults")
-    self.assertIn('CONFIG_ESP_WIFI_SSID="ESP32S3-CAPTURE"', defaults)
-    self.assertIn('CONFIG_ESP_WIFI_PASSWORD="12345678"', defaults)
-    self.assertIn("CONFIG_ESP_WIFI_CHANNEL=1", defaults)
-    self.assertIn("CONFIG_ESP_MAX_STA_CONN=1", defaults)
+    defaults = read_sdkconfig_defaults()
+    self.assertEqual('"ESP32S3-CAPTURE"', defaults.get("CONFIG_ESP_WIFI_SSID"))
+    self.assertEqual('"12345678"', defaults.get("CONFIG_ESP_WIFI_PASSWORD"))
+    self.assertEqual("1", defaults.get("CONFIG_ESP_WIFI_CHANNEL"))
+    self.assertEqual("1", defaults.get("CONFIG_ESP_MAX_STA_CONN"))
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -52,9 +63,9 @@ Run:
 python3 -m unittest tests.test_wifi_ap_component.WifiApComponentStructureTest.test_project_defaults_preserve_softap_identity -v
 ```
 
-Expected: FAIL because `sdkconfig.defaults` does not contain the SSID assertion.
+Expected: FAIL because `CONFIG_ESP_WIFI_SSID` resolves to `None`.
 
-- [ ] **Step 3: Add the minimal persistent defaults**
+- [x] **Step 3: Add the minimal persistent defaults**
 
 Append this project configuration block to `sdkconfig.defaults`:
 
@@ -67,13 +78,13 @@ CONFIG_ESP_WIFI_CHANNEL=1
 CONFIG_ESP_MAX_STA_CONN=1
 ```
 
-- [ ] **Step 4: Update the operator documentation**
+- [x] **Step 4: Update the operator documentation**
 
 Change the SoftAP section in `README.md` to state that project defaults are
 `ESP32S3-CAPTURE`, password `12345678`, channel 1, and one station. Keep the
 `idf.py menuconfig` instructions for deliberate overrides.
 
-- [ ] **Step 5: Run the focused test and verify GREEN**
+- [x] **Step 5: Run the focused test and verify GREEN**
 
 Run:
 
@@ -83,7 +94,7 @@ python3 -m unittest tests.test_wifi_ap_component.WifiApComponentStructureTest.te
 
 Expected: PASS.
 
-- [ ] **Step 6: Regenerate and inspect the effective ESP-IDF configuration**
+- [x] **Step 6: Regenerate and inspect the effective ESP-IDF configuration**
 
 Preserve the current ignored config for diagnosis, then regenerate it through
 the ESP-IDF 5.5.4 toolchain:
@@ -91,13 +102,13 @@ the ESP-IDF 5.5.4 toolchain:
 ```bash
 mv sdkconfig /private/tmp/edgeDeploy_GS-sdkconfig-before-softap-fix
 source /Users/stephenapollo/.espressif/tools/activate_idf_v5.5.4.sh
-idf.py reconfigure
+idf.py set-target esp32s3
 ```
 
 Verify the generated `sdkconfig` contains all four project values and that the
 configured build component list still includes `modev2` but not `modev1`.
 
-- [ ] **Step 7: Run full regression and firmware verification**
+- [x] **Step 7: Run full regression and firmware verification**
 
 Run:
 
@@ -111,7 +122,7 @@ strings build/edgeDeploy_GS.bin | rg '^ESP32S3-CAPTURE$'
 Expected: all Python tests pass; ESP-IDF build exits 0; the final firmware
 contains `ESP32S3-CAPTURE`; application image fits the 4 MiB partition.
 
-- [ ] **Step 8: Commit the tested fix**
+- [x] **Step 8: Commit the tested fix**
 
 ```bash
 git add tests/test_wifi_ap_component.py sdkconfig.defaults README.md
