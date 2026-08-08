@@ -7,6 +7,56 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class Modev2ComponentConfigurationTest(unittest.TestCase):
+    def test_modev2_is_the_active_model_component(self):
+        project_cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        inference_cmake = (
+            ROOT / "components/INFERENCE/CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/modev2"',
+            project_cmake,
+        )
+        self.assertNotIn(
+            'EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/modev1"',
+            project_cmake,
+        )
+        self.assertIn(
+            "REQUIRES CAMERA esp32-camera modev2",
+            inference_cmake,
+        )
+
+    def test_modev2_metadata_matches_deployment(self):
+        metadata = (
+            ROOT / "modev2/model-parameters/model_metadata.h"
+        ).read_text(encoding="utf-8")
+
+        for definition in (
+            "#define EI_CLASSIFIER_PROJECT_DEPLOY_VERSION     2",
+            "#define EI_CLASSIFIER_INPUT_WIDTH                96",
+            "#define EI_CLASSIFIER_INPUT_HEIGHT               96",
+            "#define EI_CLASSIFIER_LABEL_COUNT                3",
+            "#define EI_CLASSIFIER_TFLITE_INPUT_DATATYPE      EI_CLASSIFIER_DATATYPE_INT8",
+            "#define EI_CLASSIFIER_TFLITE_OUTPUT_DATATYPE     EI_CLASSIFIER_DATATYPE_INT8",
+            "#define EI_CLASSIFIER_RESIZE_MODE                EI_CLASSIFIER_RESIZE_FIT_SHORTEST",
+        ):
+            self.assertIn(definition, metadata)
+
+    def test_modev2_idf_component_keeps_esp_nn_configuration(self):
+        component = (ROOT / "modev2/CMakeLists.txt").read_text(encoding="utf-8")
+        esp_nn = (ROOT / "modev2/esp_nn_sources.cmake").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("idf_component_register(", component)
+        self.assertIn("${EI_ESP_NN_C_SOURCES}", component)
+        self.assertIn("${EI_ESP_NN_ASM_SOURCES}", component)
+        self.assertIn("EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=1", esp_nn)
+        self.assertIn("EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN_S3=1", esp_nn)
+        self.assertIn("EI_MAX_OVERFLOW_BUFFER_COUNT=256", esp_nn)
+
+
 class InferenceComponentBehaviorTest(unittest.TestCase):
     def test_esp32s3_calloc_uses_aligned_zeroed_allocator(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -23,11 +73,11 @@ class InferenceComponentBehaviorTest(unittest.TestCase):
                     "-I",
                     str(ROOT / "tests/host/include"),
                     "-I",
-                    str(ROOT / "modev1"),
+                    str(ROOT / "modev2"),
                     str(ROOT / "tests/host/ei_classifier_porting_test.cpp"),
                     str(
                         ROOT
-                        / "modev1/edge-impulse-sdk/porting/espressif/ei_classifier_porting.cpp"
+                        / "modev2/edge-impulse-sdk/porting/espressif/ei_classifier_porting.cpp"
                     ),
                     "-o",
                     str(executable),
@@ -71,7 +121,7 @@ class InferenceComponentBehaviorTest(unittest.TestCase):
                     "-Wextra",
                     "-Werror",
                     "-I",
-                    str(ROOT / "modev1"),
+                    str(ROOT / "modev2"),
                     str(ROOT / "tests/host/esp_nn_overflow_config_test.cpp"),
                     "-o",
                     str(executable),

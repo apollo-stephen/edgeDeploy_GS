@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 
 get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
-set(MODEV1_ROOT "${PROJECT_ROOT}/modev1")
-set(EI_SDK_DIR "${MODEV1_ROOT}/edge-impulse-sdk")
+set(MODEV2_ROOT "${PROJECT_ROOT}/modev2")
+set(EI_SDK_DIR "${MODEV2_ROOT}/edge-impulse-sdk")
 set(ESP_NN_ROOT "${EI_SDK_DIR}/porting/espressif/ESP-NN")
 
 include("${EI_SDK_DIR}/cmake/utils.cmake")
-include("${MODEV1_ROOT}/esp_nn_sources.cmake")
+include("${MODEV2_ROOT}/esp_nn_sources.cmake")
 
 list(LENGTH EI_ESP_NN_C_SOURCES ESP_NN_C_COUNT)
 list(LENGTH EI_ESP_NN_ASM_SOURCES ESP_NN_ASM_COUNT)
