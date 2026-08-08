@@ -71,7 +71,7 @@ class HttpCaptureComponentBehaviorTest(unittest.TestCase):
                 run_result.stdout,
             )
 
-    def test_dashboard_keeps_previous_pair_when_image_decode_fails(self):
+    def test_dashboard_keeps_results_current_when_image_decode_fails(self):
         if shutil.which("node") is None:
             self.skipTest("Node.js is required for dashboard behavior testing")
 
@@ -134,8 +134,11 @@ class HttpCaptureComponentBehaviorTest(unittest.TestCase):
 const elements=new Map();
 function element(id){
   if(!elements.has(id))elements.set(id,{
-    id,textContent:'',src:'',className:'',
-    addEventListener(){},appendChild(){},replaceChildren(){},
+    id,textContent:'',src:'',className:'',children:[],listeners:{},
+    addEventListener(type,listener){this.listeners[type]=listener;},
+    append(...children){this.children.push(...children);},
+    appendChild(child){this.children.push(child);},
+    replaceChildren(){this.children=[];},
   });
   return elements.get(id);
 }
@@ -154,13 +157,14 @@ global.Image=class{
   set src(value){this.value=value;queueMicrotask(()=>this.onerror&&this.onerror());}
 };
 let requestCount=0;
-global.fetch=async()=>{
+global.fetch=async(url)=>{
   requestCount+=1;
-  if(requestCount===1)return{
+  if(url==='/api/inference')return{
     ok:true,
     json:async()=>({
       ready:true,sequence:1,prediction:'wet',confidence:0.9,age_ms:2,
-      timing:{dsp_ms:26,classification_ms:289,anomaly_ms:0},scores:[],
+      timing:{dsp_ms:26,classification_ms:289,anomaly_ms:0},
+      scores:[{label:'wet',value:0.9}],
     }),
   };
   return{
@@ -172,8 +176,15 @@ global.fetch=async()=>{
                 + """
 await new Promise(resolve=>setTimeout(resolve,10));
 if(element('inferenceSnapshot').src!=='blob:old')throw new Error('old image changed');
-if(element('prediction').textContent!=='old result')throw new Error('old result changed');
+if(element('prediction').textContent!=='wet (0.90000)')throw new Error('result did not update');
+if(element('timing').textContent!=='DSP 26 ms · classification 289 ms · anomaly 0 ms'){
+  throw new Error('timing did not update');
+}
+if(element('scores').children.length!==1)throw new Error('scores did not update');
 if(!revoked.includes('blob:new'))throw new Error('candidate URL leaked');
+const requestsAfterFailure=requestCount;
+await pollInference();
+if(requestCount!==requestsAfterFailure+2)throw new Error('image was not retried');
 })();
 """
             )

@@ -529,8 +529,11 @@ static void verify_preview_page(const httpd_uri_t *index_uri)
     httpd_req_t request = {0};
     assert(index_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_type, "text/html; charset=utf-8") == 0);
-    assert(strstr(request.response_body, "Capture now") != NULL);
-    assert(strstr(request.response_body, "Pause preview") != NULL);
+    assert(strstr(request.response_body, "Capture now") == NULL);
+    assert(strstr(request.response_body, "Pause preview") == NULL);
+    assert(strstr(request.response_body, "Streaming at up to 15 FPS") == NULL);
+    assert(strstr(request.response_body, "id=\"captureButton\"") == NULL);
+    assert(strstr(request.response_body, "id=\"streamButton\"") == NULL);
     assert(strstr(request.response_body, "id=\"livePreview\"") != NULL);
     assert(strstr(request.response_body, "id=\"inferenceSnapshot\"") != NULL);
     assert(strstr(request.response_body, "id=\"prediction\"") != NULL);
@@ -542,7 +545,10 @@ static void verify_preview_page(const httpd_uri_t *index_uri)
                   "const streamUrl=`http://${location.hostname}:81/stream`;") != NULL);
     assert(strstr(request.response_body,
                   "livePreview.src=`${streamUrl}?t=${Date.now()}`;") != NULL);
-    assert(strstr(request.response_body, "window.open") != NULL);
+    assert(strstr(request.response_body, "window.open") == NULL);
+    assert(strstr(request.response_body, "stopStream") == NULL);
+    assert(strstr(request.response_body, "liveReconnectTimer") != NULL);
+    assert(strstr(request.response_body, "setTimeout(startStream,1000)") != NULL);
     assert(strstr(request.response_body, "Date.now()") != NULL);
     assert(strstr(request.response_body, "fetch('/api/inference'") != NULL);
     assert(strstr(request.response_body,
