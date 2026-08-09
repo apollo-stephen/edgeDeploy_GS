@@ -1,0 +1,189 @@
+# EdgeDeploy GS
+
+[English](README.md) | [中文](README.zh-CN.md)
+
+EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
+摄像头采集原生 128×128 JPEG 图像，提供本地 Wi-Fi 推理网页，并在设备端
+运行第二版 Edge Impulse 垃圾分类模型。
+
+![EdgeDeploy GS 演示](演示.gif)
+
+## 主要功能
+
+- 采集 OV5640 原生 128×128 JPEG，并提供 MJPEG 实时预览。
+- 在固定到 CPU1 的 FreeRTOS 任务中周期性运行 Edge Impulse 推理。
+- 支持三个垃圾类别：`harmful`、`recycleable` 和 `wet`。
+- ESP32-S3 自建 SoftAP，并在 `http://192.168.4.1/` 提供推理网页。
+- 同一网页展示实时预览、实际参与推理的图像、各类别分数、最终结果和耗时。
+- 使用本机 Python 工具连续采集数据集，无需重新构建固件。
+- 直播、单帧拍照和推理通过统一的摄像头帧所有权机制安全协作。
+
+## 环境与硬件要求
+
+### 硬件
+
+- 配有 16 MB Flash 和 Octal PSRAM 的 ESP32-S3。
+- 按本项目引脚配置连接的 OV5640 摄像头。
+
+### 软件
+
+- ESP-IDF 5.5.4。
+- Python 3，用于本机数据集采集工具和主机测试。
+- `espressif/esp32-camera` 2.1.7，由 ESP-IDF Component Manager 解析。
+
+`esp_http_server` 已包含在 ESP-IDF 中。项目自有的 `HTTP_CAPTURE` 组件和
+Edge Impulse 导出包自带的 ESP-NN 内核不需要额外安装 Registry 组件。
+
+## 工作原理
+
+### 摄像头采集
+
+固件将 OV5640 配置为 `PIXFORMAT_JPEG`、`FRAMESIZE_128X128`、JPEG 质量
+12、两个 DRAM 帧缓冲区，并使用最新帧采集模式。摄像头组件约定单张 JPEG
+最大为 8,192 字节；使用帧之前会检查格式、尺寸、数据指针和长度。
+
+`CAMERA` 组件统一管理取帧互斥锁，因此 HTTP 直播、单帧拍照和推理不会同时
+持有同一摄像头帧。
+
+### modev2 推理
+
+摄像头、SoftAP 和 HTTP 服务启动后，`ei_inference` 任务每两秒在 CPU1 上
+运行一次，CPU0 主要留给 Wi-Fi 和 HTTP 服务。
+
+每轮推理执行以下步骤：
+
+1. 以 250 ms 超时获取一张原生 128×128 JPEG。
+2. 保存原始 JPEG 供网页显示，并将其解码为 RGB888。
+3. 使用导出模型配置的 `FIT_SHORTEST` 策略缩放到 96×96。
+4. 使用 ESP-NN 内核运行第二版 INT8 EON 模型。
+5. 发布带序列号的结果元数据以及对应的原始 JPEG。
+
+摄像头图像首先解码到 49,152 字节的 RGB888 缓冲区。`FIT_SHORTEST`
+缩放使用另一个 49,152 字节工作区，因为它会先将 128×128 裁剪结果写入
+目标工作区，再原地缩小；分类器只读取最终的 96×96 RGB 区域。
+
+导出模型中的标签拼写为 `recycleable`，固件保留该原始拼写。当最高概率低于
+导出模型设定的 0.60 阈值时，最终结果显示为 `uncertain`。
+
+串口输出示例：
+
+```text
+I (...) inference: Timing: DSP 6 ms, classification 125 ms, anomaly 0 ms
+I (...) inference: harmful: 0.00391
+I (...) inference: recycleable: 0.01172
+I (...) inference: wet: 0.98438
+I (...) inference: Prediction: wet (0.98438)
+```
+
+当前启用的 `modev2` 使用约 126 KB Tensor Arena。大块内存分配到 PSRAM，
+项目使用自定义 4 MB factory 分区容纳 Edge Impulse SDK 和生成模型。
+`modev1` 保留在仓库中用于回退，但不会参与当前构建。
+
+## 配置 SoftAP
+
+项目默认配置如下：
+
+| 配置项 | 默认值 |
+| --- | --- |
+| SSID | `ESP32S3-CAPTURE` |
+| 密码 | `12345678` |
+| 信道 | `1` |
+| 最大连接数 | `1` |
+
+如需修改，运行：
+
+```bash
+idf.py menuconfig
+```
+
+进入 `Example Configuration` 修改 SoftAP 配置。`sdkconfig.defaults` 中的
+默认值在执行 `idf.py set-target esp32s3` 后仍会保留；只有需要本机覆盖时才
+使用 `menuconfig`。
+
+## 构建、烧录与串口监视
+
+激活 ESP-IDF 5.5.4 后运行：
+
+```bash
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/cu.YOUR_PORT flash monitor
+```
+
+使用 `Ctrl-]` 退出串口监视器。
+
+启动成功后，串口会输出摄像头 PID、SoftAP 地址、推理任务状态以及：
+
+```text
+Image preview ready at http://192.168.4.1/
+```
+
+## 使用推理网页
+
+1. 使用电脑或手机连接配置好的 ESP32-S3 SoftAP。
+2. 打开 `http://192.168.4.1/`。
+3. 左侧会自动启动原生 MJPEG 实时预览。
+4. 右侧显示最近一次推理实际使用的 128×128 JPEG。
+5. 下方显示最终预测、所有类别分数和推理耗时。
+
+连接这个独立热点时暂时失去普通互联网连接属于正常现象。网页每秒轮询一次
+推理元数据，并按序列号请求匹配的 JPEG。元数据与图像独立更新：如果图像
+暂时加载失败，网页会保留上一张有效快照，同时继续刷新结果并重试图像。
+实时预览发生流错误后也会自动重连。
+
+## 本机连续采集数据集
+
+本机 Python 控制台使用固件已有的 HTTP API，因此连续采集不需要重新构建
+固件。先让 Mac 连接 ESP32 SoftAP，再在项目根目录运行：
+
+```bash
+python3 dataset_capture_server.py
+```
+
+然后：
+
+1. 打开 `http://127.0.0.1:8000`。
+2. 输入数据集名称和拍照间隔。
+3. 点击“开始连续拍照”。
+4. 完成后点击“停止并保存”。
+5. JPEG 文件和 `metadata.csv` 位于 `data/<数据集名称>/`。
+
+网页会保持 MJPEG 预览连接，并显示最新保存的 JPEG 和最近 30 张缩略图。
+30 张限制只作用于网页图库和浏览器内存，所有成功采集的图片仍会完整保存到
+磁盘，因此单个类别采集 400–600 张图片不会被截断。
+
+## HTTP API
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /capture` | 返回一张新的 `image/jpeg`。 |
+| `GET /api/status` | 返回摄像头状态、采集计数、最近 JPEG 长度、剩余 Heap 和 PSRAM。 |
+| `GET /api/inference` | 返回最近一次预测、动态类别分数、耗时、JPEG 长度、序列号和更新时间；首次结果前返回 `{"ready":false}`。 |
+| `GET /api/inference/image?sequence=N` | 返回当前推理序列对应的 JPEG；过期序列返回 HTTP 409。 |
+
+可直接检查单帧接口：
+
+```bash
+curl -D - http://192.168.4.1/capture -o capture.jpg
+file capture.jpg
+```
+
+响应应包含 `Content-Type: image/jpeg`、`X-Frame-Width: 128` 和
+`X-Frame-Height: 128`。
+
+## 验证
+
+运行全部主机行为测试和回归测试：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+主机测试和固件构建成功只能证明软件契约及编译通过；完整硬件验收还需要确认：
+
+- OV5640 被正确识别，SoftAP 能够持续被搜索到。
+- 三个类别概率每两秒输出一次，且没有任务看门狗警告。
+- 已知样本能够得到预期分类。
+- 同一序列下，网页快照、网页分数和串口输出一致。
+- 长时间重复运行时，实时预览和推理仍能正常响应。
+- Heap、PSRAM 和摄像头帧缓冲区保持稳定。
