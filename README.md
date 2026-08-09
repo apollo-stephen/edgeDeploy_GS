@@ -4,14 +4,14 @@
 
 EdgeDeploy GS is an ESP32-S3 edge-vision firmware that captures native
 128x128 JPEG frames from an OV5640 camera, serves a local Wi-Fi dashboard,
-and runs a deployment-version-2 Edge Impulse waste classifier on-device.
+and runs a MobileNetV1 waste classifier on-device.
 
 ![EdgeDeploy GS demonstration](演示.gif)
 
 ## Features
 
 - Native 128x128 OV5640 JPEG capture and MJPEG live preview.
-- Periodic Edge Impulse inference in a FreeRTOS task pinned to CPU1.
+- Periodic MobileNetV1 inference in a FreeRTOS task pinned to CPU1.
 - Three waste classes: `harmful`, `recycleable`, and `wet`.
 - A standalone ESP32-S3 SoftAP and dashboard at `http://192.168.4.1/`.
 - Live preview, the exact frame used for inference, class scores, prediction,
@@ -34,8 +34,8 @@ and runs a deployment-version-2 Edge Impulse waste classifier on-device.
 - `espressif/esp32-camera` 2.1.7, resolved by ESP-IDF Component Manager.
 
 `esp_http_server` is included with ESP-IDF. The project-owned `HTTP_CAPTURE`
-component and the bundled Edge Impulse ESP-NN kernels do not require separate
-registry packages.
+component and the bundled ESP-NN kernels do not require separate registry
+packages.
 
 ## How it works
 
@@ -50,7 +50,7 @@ The `CAMERA` component owns the frame-acquisition mutex. HTTP streaming,
 single-frame capture, and inference therefore cannot retain the same camera
 frame concurrently.
 
-### modev2 inference
+### MobileNetV1 inference
 
 After the camera, SoftAP, and HTTP services start, the `ei_inference` task runs
 once every two seconds on CPU1. CPU0 remains available for Wi-Fi and HTTP work.
@@ -61,7 +61,7 @@ Each inference iteration:
 2. Saves the original JPEG for the dashboard and decodes it into RGB888.
 3. Resizes the image to the model's 96x96 input with the exported
    `FIT_SHORTEST` policy.
-4. Runs the deployment-version-2 INT8 EON model using ESP-NN kernels.
+4. Runs the INT8 MobileNetV1 classifier using ESP-NN kernels.
 5. Publishes versioned metadata and the matching original JPEG.
 
 The camera frame is decoded into a 49,152-byte RGB888 capture buffer. The
@@ -83,10 +83,9 @@ I (...) inference: wet: 0.98438
 I (...) inference: Prediction: wet (0.98438)
 ```
 
-The active `modev2` deployment uses an approximately 126 KB tensor arena.
-Large allocations use PSRAM, and a custom 4 MB factory partition accommodates
-the Edge Impulse SDK and generated model. `modev1` remains in the repository
-for rollback but is not part of the active build.
+The MobileNetV1 classifier uses an approximately 126 KB tensor arena. Large
+allocations use PSRAM, and a custom 4 MB factory partition accommodates the
+inference runtime and generated model.
 
 ## Configure the SoftAP
 

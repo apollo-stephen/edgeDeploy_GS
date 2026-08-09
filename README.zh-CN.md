@@ -4,14 +4,14 @@
 
 EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 摄像头采集原生 128×128 JPEG 图像，提供本地 Wi-Fi 推理网页，并在设备端
-运行第二版 Edge Impulse 垃圾分类模型。
+运行 MobileNetV1 垃圾分类模型。
 
 ![EdgeDeploy GS 演示](演示.gif)
 
 ## 主要功能
 
 - 采集 OV5640 原生 128×128 JPEG，并提供 MJPEG 实时预览。
-- 在固定到 CPU1 的 FreeRTOS 任务中周期性运行 Edge Impulse 推理。
+- 在固定到 CPU1 的 FreeRTOS 任务中周期性运行 MobileNetV1 推理。
 - 支持三个垃圾类别：`harmful`、`recycleable` 和 `wet`。
 - ESP32-S3 自建 SoftAP，并在 `http://192.168.4.1/` 提供推理网页。
 - 同一网页展示实时预览、实际参与推理的图像、各类别分数、最终结果和耗时。
@@ -32,7 +32,7 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 - `espressif/esp32-camera` 2.1.7，由 ESP-IDF Component Manager 解析。
 
 `esp_http_server` 已包含在 ESP-IDF 中。项目自有的 `HTTP_CAPTURE` 组件和
-Edge Impulse 导出包自带的 ESP-NN 内核不需要额外安装 Registry 组件。
+模型自带的 ESP-NN 内核不需要额外安装 Registry 组件。
 
 ## 工作原理
 
@@ -45,7 +45,7 @@ Edge Impulse 导出包自带的 ESP-NN 内核不需要额外安装 Registry 组�
 `CAMERA` 组件统一管理取帧互斥锁，因此 HTTP 直播、单帧拍照和推理不会同时
 持有同一摄像头帧。
 
-### modev2 推理
+### MobileNetV1 推理
 
 摄像头、SoftAP 和 HTTP 服务启动后，`ei_inference` 任务每两秒在 CPU1 上
 运行一次，CPU0 主要留给 Wi-Fi 和 HTTP 服务。
@@ -55,7 +55,7 @@ Edge Impulse 导出包自带的 ESP-NN 内核不需要额外安装 Registry 组�
 1. 以 250 ms 超时获取一张原生 128×128 JPEG。
 2. 保存原始 JPEG 供网页显示，并将其解码为 RGB888。
 3. 使用导出模型配置的 `FIT_SHORTEST` 策略缩放到 96×96。
-4. 使用 ESP-NN 内核运行第二版 INT8 EON 模型。
+4. 使用 ESP-NN 内核运行 INT8 MobileNetV1 分类器。
 5. 发布带序列号的结果元数据以及对应的原始 JPEG。
 
 摄像头图像首先解码到 49,152 字节的 RGB888 缓冲区。`FIT_SHORTEST`
@@ -75,9 +75,8 @@ I (...) inference: wet: 0.98438
 I (...) inference: Prediction: wet (0.98438)
 ```
 
-当前启用的 `modev2` 使用约 126 KB Tensor Arena。大块内存分配到 PSRAM，
-项目使用自定义 4 MB factory 分区容纳 Edge Impulse SDK 和生成模型。
-`modev1` 保留在仓库中用于回退，但不会参与当前构建。
+MobileNetV1 分类器使用约 126 KB Tensor Arena。大块内存分配到 PSRAM，
+项目使用自定义 4 MB factory 分区容纳推理运行时和生成模型。
 
 ## 配置 SoftAP
 
