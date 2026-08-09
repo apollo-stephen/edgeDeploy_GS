@@ -68,98 +68,15 @@ git commit -m "fix: preserve inference snapshot during resize"
 
 Expected: the commit contains the four listed files and excludes `.gitignore`.
 
-### Task 2: Add a failing localization contract test
-
-**Files:**
-- Create: `tests/test_readme_localization.py`
-- Read: `README.md`
-- Expected later: `README.zh-CN.md`
-- Asset: `演示.gif`
-
-**Interfaces:**
-- Consumes: repository-root Markdown files and the supplied GIF asset.
-- Produces: a host-side contract that verifies language navigation, localized demonstration image markup, and required section coverage.
-
-- [ ] **Step 1: Write the localization contract test**
-
-Create `tests/test_readme_localization.py` with:
-
-```python
-import unittest
-from pathlib import Path
-
-
-ROOT = Path(__file__).resolve().parents[1]
-LANGUAGE_SELECTOR = "[English](README.md) | [中文](README.zh-CN.md)"
-
-
-class ReadmeLocalizationTest(unittest.TestCase):
-    def test_language_navigation_and_demo_asset(self):
-        english = (ROOT / "README.md").read_text(encoding="utf-8")
-        chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
-
-        self.assertTrue((ROOT / "演示.gif").is_file())
-        self.assertIn(LANGUAGE_SELECTOR, english)
-        self.assertIn(LANGUAGE_SELECTOR, chinese)
-        self.assertIn("![EdgeDeploy GS demonstration](演示.gif)", english)
-        self.assertIn("![EdgeDeploy GS 演示](演示.gif)", chinese)
-
-    def test_both_languages_cover_required_topics(self):
-        documents = {
-            "README.md": [
-                "## Features",
-                "## Requirements",
-                "## How it works",
-                "## Configure the SoftAP",
-                "## Build, flash, and monitor",
-                "## Use the dashboard",
-                "## Collect a dataset locally",
-                "## HTTP API",
-                "## Verification",
-            ],
-            "README.zh-CN.md": [
-                "## 主要功能",
-                "## 环境与硬件要求",
-                "## 工作原理",
-                "## 配置 SoftAP",
-                "## 构建、烧录与串口监视",
-                "## 使用推理网页",
-                "## 本机连续采集数据集",
-                "## HTTP API",
-                "## 验证",
-            ],
-        }
-        for filename, headings in documents.items():
-            content = (ROOT / filename).read_text(encoding="utf-8")
-            for heading in headings:
-                with self.subTest(filename=filename, heading=heading):
-                    self.assertIn(heading, content)
-
-
-if __name__ == "__main__":
-    unittest.main()
-```
-
-- [ ] **Step 2: Run the new test and confirm it fails**
-
-Run:
-
-```bash
-python3 -m unittest tests.test_readme_localization
-```
-
-Expected: error because `README.zh-CN.md` does not exist yet.
-
-### Task 3: Write equivalent English and Chinese project guides
+### Task 2: Write equivalent English and Chinese project guides
 
 **Files:**
 - Modify: `README.md`
 - Create: `README.zh-CN.md`
 - Add: `演示.gif`
-- Test: `tests/test_readme_localization.py`
 
 **Interfaces:**
-- Consumes: the language selector, GIF filename, and topic contract defined in Task 2.
+- Consumes: the approved language selector, GIF filename, and design specification.
 - Produces: two directly linked, equivalent GitHub project guides.
 
 - [ ] **Step 1: Rewrite the English landing page**
@@ -178,7 +95,9 @@ and runs a deployment-version-2 Edge Impulse waste classifier on-device.
 ![EdgeDeploy GS demonstration](演示.gif)
 ```
 
-Continue with the exact top-level headings required by the localization test.
+Continue with these exact top-level headings: `Features`, `Requirements`,
+`How it works`, `Configure the SoftAP`, `Build, flash, and monitor`, `Use the
+dashboard`, `Collect a dataset locally`, `HTTP API`, and `Verification`.
 Retain the current verified facts and commands, including ESP-IDF 5.5.4,
 ESP32-S3 with 16 MB flash and Octal PSRAM, SoftAP defaults, the three model
 labels, `idf.py` commands, dataset capture instructions, and host test command.
@@ -210,43 +129,35 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 ![EdgeDeploy GS 演示](演示.gif)
 ```
 
-Use the exact Chinese headings required by the localization test. Translate
-the English document faithfully rather than shortening it; keep commands,
-paths, model labels, configuration keys, URLs, and JSON endpoint names
-unchanged. Explain the 49,152-byte resize-workspace behavior in Chinese.
+Use these exact top-level headings: `主要功能`, `环境与硬件要求`, `工作原理`,
+`配置 SoftAP`, `构建、烧录与串口监视`, `使用推理网页`, `本机连续采集数据集`,
+`HTTP API`, and `验证`. Translate the English document faithfully rather than
+shortening it; keep commands, paths, model labels, configuration keys, URLs,
+and JSON endpoint names unchanged. Explain the 49,152-byte resize-workspace
+behavior in Chinese.
 
-- [ ] **Step 3: Run the localization test and confirm it passes**
+- [ ] **Step 3: Check files, links, image references, and matching coverage**
 
 Run:
 
 ```bash
-python3 -m unittest tests.test_readme_localization
+python3 -c 'from pathlib import Path; root=Path("."); en=(root/"README.md").read_text(encoding="utf-8"); zh=(root/"README.zh-CN.md").read_text(encoding="utf-8"); selector="[English](README.md) | [中文](README.zh-CN.md)"; assert (root/"演示.gif").is_file(); assert selector in en and selector in zh; assert "![EdgeDeploy GS demonstration](演示.gif)" in en; assert "![EdgeDeploy GS 演示](演示.gif)" in zh; print("README assets and links OK")'
+git diff --check -- README.md README.zh-CN.md
 ```
 
-Expected: `Ran 2 tests` followed by `OK`.
+Expected: `README assets and links OK` and no whitespace errors.
 
-- [ ] **Step 4: Check links, image references, and matching coverage**
-
-Run:
-
-```bash
-python3 -c 'from pathlib import Path; root=Path("."); assert (root/"README.md").is_file(); assert (root/"README.zh-CN.md").is_file(); assert (root/"演示.gif").is_file(); print("README assets OK")'
-git diff --check -- README.md README.zh-CN.md tests/test_readme_localization.py
-```
-
-Expected: `README assets OK` and no whitespace errors.
-
-- [ ] **Step 5: Commit the localized documentation and GIF**
+- [ ] **Step 4: Commit the localized documentation and GIF**
 
 Run:
 
 ```bash
-git add README.md README.zh-CN.md tests/test_readme_localization.py 演示.gif
+git add README.md README.zh-CN.md 演示.gif
 git commit -m "docs: add bilingual project guide"
 ```
 
-Expected: the commit contains exactly the two README files, localization test,
-and GIF; `.gitignore` remains unstaged.
+Expected: the commit contains exactly the two README files and GIF;
+`.gitignore` remains unstaged.
 
 ### Task 4: Verify and prepare branch integration
 
@@ -266,7 +177,7 @@ Run:
 python3 -m unittest discover -s tests
 ```
 
-Expected: all tests pass. The test count increases from 57 to 59.
+Expected: all 57 tests pass.
 
 - [ ] **Step 2: Build the ESP32-S3 firmware**
 
