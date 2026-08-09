@@ -26,6 +26,11 @@ constexpr size_t kCaptureRgbBufferBytes =
     CAMERA_FRAME_WIDTH * CAMERA_FRAME_HEIGHT * 3U;
 constexpr size_t kModelRgbBufferBytes =
     EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3U;
+// FIT_SHORTEST first copies the cropped source into the destination and then
+// resizes it in place, so the destination also serves as a crop workspace.
+constexpr size_t kResizeWorkspaceBytes =
+    kCaptureRgbBufferBytes > kModelRgbBufferBytes ? kCaptureRgbBufferBytes
+                                                  : kModelRgbBufferBytes;
 
 static_assert(EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE ==
                   EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT,
@@ -211,12 +216,12 @@ extern "C" esp_err_t inference_start(void)
     }
 
     s_model_rgb_buffer = static_cast<uint8_t *>(
-        heap_caps_malloc(kModelRgbBufferBytes,
+        heap_caps_malloc(kResizeWorkspaceBytes,
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (s_model_rgb_buffer == nullptr) {
         ESP_LOGE(TAG,
-                 "Failed to allocate %u-byte model RGB888 buffer in PSRAM",
-                 static_cast<unsigned int>(kModelRgbBufferBytes));
+                 "Failed to allocate %u-byte resize workspace in PSRAM",
+                 static_cast<unsigned int>(kResizeWorkspaceBytes));
         release_resources();
         return ESP_ERR_NO_MEM;
     }

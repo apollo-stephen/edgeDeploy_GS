@@ -291,8 +291,14 @@ static void verify_start_success(void)
     assert(s_allocation_calls == 4);
     assert(s_allocation_sizes[0] == CAMERA_FRAME_WIDTH *
                                         CAMERA_FRAME_HEIGHT * 3U);
-    assert(s_allocation_sizes[1] == EI_CLASSIFIER_INPUT_WIDTH *
-                                        EI_CLASSIFIER_INPUT_HEIGHT * 3U);
+    const size_t capture_rgb_bytes =
+        CAMERA_FRAME_WIDTH * CAMERA_FRAME_HEIGHT * 3U;
+    const size_t model_rgb_bytes =
+        EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3U;
+    const size_t resize_workspace_bytes =
+        capture_rgb_bytes > model_rgb_bytes ? capture_rgb_bytes
+                                            : model_rgb_bytes;
+    assert(s_allocation_sizes[1] == resize_workspace_bytes);
     assert(s_allocation_sizes[2] == INFERENCE_MAX_JPEG_BYTES);
     assert(s_allocation_sizes[3] == INFERENCE_MAX_JPEG_BYTES);
     for (unsigned int capabilities : s_allocation_caps) {

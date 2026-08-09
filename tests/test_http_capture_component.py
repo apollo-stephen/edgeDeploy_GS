@@ -110,6 +110,11 @@ class HttpCaptureComponentBehaviorTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, html_result.returncode, msg=html_result.stderr)
+            self.assertIn(
+                ".prediction{font-size:1.25rem;font-weight:800;"
+                "text-align:center;color:#155eef;margin:.25rem 0}",
+                html_result.stdout,
+            )
             script = html_result.stdout.split("<script>", 1)[1].split(
                 "</script>", 1
             )[0]
