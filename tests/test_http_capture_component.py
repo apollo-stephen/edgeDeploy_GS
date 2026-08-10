@@ -319,7 +319,18 @@ if(!intervals.some(timer=>timer.name==='pollHealth'&&timer.delay===1000)){
 const control=requests.find(request=>request.url==='/api/health/control');
 if(!control||control.options.method!=='POST')throw new Error('control POST missing');
 
-for(let sequence=1;sequence<=65;sequence+=1)appendHealthSample(sample(sequence));
+for(let sequence=1;sequence<=65;sequence+=1){
+  appendHealthSample(sample(sequence));
+  if(sequence===1){
+    if(element('latencyAge').textContent!=='0 秒前'){
+      throw new Error('single-sample age is invalid');
+    }
+    const path=element('latencyPath').getAttribute('d');
+    if(!path||path.includes('NaN')||path.includes('Infinity')){
+      throw new Error('single-sample path is invalid');
+    }
+  }
+}
 if(healthHistory.length!==60)throw new Error('history is not bounded');
 if(healthHistory[0].sequence!==6||healthHistory[59].sequence!==65){
   throw new Error('wrong retained sequences');
@@ -332,11 +343,48 @@ for(const id of ['latencyPath','memoryFreePath','memoryLargestPath']){
     throw new Error(`invalid chart path ${id}`);
   }
 }
+if(element('latencyCurrent').textContent!=='当前 120 ms'){
+  throw new Error('latest latency value missing');
+}
+if(element('latencyAge').textContent!=='59 秒前'||
+   element('memoryAge').textContent!=='59 秒前'){
+  throw new Error('chart time span missing');
+}
+for(const id of [
+  'latencyTickTop','latencyTickMiddle','latencyTickBottom',
+  'memoryTickTop','memoryTickMiddle','memoryTickBottom'
+]){
+  const label=element(id).textContent;
+  if(!label||label==='—'||!Number.isFinite(Number(label))){
+    throw new Error(`invalid chart tick ${id}: ${label}`);
+  }
+}
+if(element('memoryFreeValue').textContent!=='154.4 KiB'||
+   element('memoryLargestValue').textContent!=='80.1 KiB'){
+  throw new Error('latest memory values missing');
+}
+const delayedSample=sample(66);
+delayedSample.monitor_uptime_ms=126000;
+appendHealthSample(delayedSample);
+if(element('latencyAge').textContent!=='119 秒前'||
+   element('memoryAge').textContent!=='119 秒前'){
+  throw new Error('chart time span was incorrectly capped');
+}
 
 await setHealthEnabled(false);
 if(boardEnabled)throw new Error('board was not disabled');
 if(healthHistory.length!==0)throw new Error('history was not cleared');
 if(element('healthPanelBody').hidden!==true)throw new Error('off panel stayed expanded');
+for(const id of [
+  'latencyCurrent','latencyTickTop','latencyTickMiddle',
+  'latencyTickBottom','latencyAge','memoryFreeValue',
+  'memoryLargestValue','memoryTickTop','memoryTickMiddle',
+  'memoryTickBottom','memoryAge'
+]){
+  if(element(id).textContent!=='—'){
+    throw new Error(`chart label was not cleared: ${id}`);
+  }
+}
 
 failHealth=true;
 await discoverHealthState();
