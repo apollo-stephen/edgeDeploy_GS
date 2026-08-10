@@ -17,7 +17,7 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 - 同一网页展示实时预览、实际参与推理的图像、各类别分数、最终结果和耗时。
 - 使用本机 Python 工具连续采集数据集，无需重新构建固件。
 - 直播、单帧拍照和推理通过统一的摄像头帧所有权机制安全协作。
-- 提供运行健康快照，覆盖推理进度、任务栈余量以及内部内存和 PSRAM 状态。
+- 网页按需开启运行健康任务，展示推理进度、任务栈余量以及内存趋势。
 
 ## 环境与硬件要求
 
@@ -49,8 +49,8 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 ### MobileNetV1 推理
 
 摄像头和 SoftAP 启动后，`ei_inference` 任务每两秒在 CPU1 上运行一次，
-CPU0 主要留给 Wi-Fi 和 HTTP 服务。随后启动健康监控任务；只有两个任务均
-成功启动，HTTP 服务才会对外开放。
+CPU0 主要留给 Wi-Fi 和 HTTP 服务。HTTP 服务随后对外开放；健康监控默认
+关闭，只在网页明确开启时创建任务。
 
 每轮推理执行以下步骤：
 
@@ -82,10 +82,15 @@ MobileNetV1 分类器使用约 126 KB Tensor Arena。大块内存分配到 PSRAM
 
 ### 运行健康监控
 
-不绑定核心的 `runtime_health` 任务以优先级 1 每秒运行一次。它记录推理尝试、
-成功、失败和连续失败次数，最近错误，最近及最大单次执行时间，以及推理任务和
-健康任务的栈高水位；同时采样内部内存和 PSRAM 的当前剩余量、历史最小剩余量
-及最大连续空闲块。
+上电后健康监控默认关闭。网页中的 `Runtime health` 开关会动态创建不绑定核心、
+优先级为 1 的 `runtime_health` 任务；关闭开关会让任务安全退出并释放任务栈。
+任务开启时每秒记录推理尝试、成功、失败和连续失败次数，最近错误，最近及最大
+单次执行时间，以及推理任务和健康任务的栈高水位；同时采样内部内存和 PSRAM
+的当前剩余量、历史最小剩余量及最大连续空闲块。
+
+网页每秒请求一次健康快照，同时续期板端 10 秒租约。若网页被直接关闭、切到
+后台太久或 Wi-Fi 中断，租约到期后健康任务会自动退出。趋势图只保留浏览器中
+最近 60 个不同序列，不在板端保存历史，也不写入 Flash。
 
 快照最初处于 `starting`，首次推理有 7 秒启动宽限期。首次成功后，如果最近
 成功结果超过 6 秒没有更新，或连续 3 次推理失败，状态变为 `degraded`；后续
@@ -139,6 +144,8 @@ Image preview ready at http://192.168.4.1/
 3. 左侧会自动启动原生 MJPEG 实时预览。
 4. 右侧显示最近一次推理实际使用的 128×128 JPEG。
 5. 下方显示最终预测、所有类别分数和推理耗时。
+6. 需要时打开 `Runtime health` 开关，查看当前指标和最近 60 秒趋势；关闭后板端
+   健康任务停止。
 
 连接这个独立热点时暂时失去普通互联网连接属于正常现象。网页每秒轮询一次
 推理元数据，并按序列号请求匹配的 JPEG。元数据与图像独立更新：如果图像
@@ -172,7 +179,8 @@ python3 dataset_capture_server.py
 | --- | --- |
 | `GET /capture` | 返回一张新的 `image/jpeg`。 |
 | `GET /api/status` | 返回摄像头状态、采集计数、最近 JPEG 长度、剩余 Heap 和 PSRAM。 |
-| `GET /api/health` | 返回最近的运行健康状态、推理计数与耗时、任务栈高水位及内部内存/PSRAM 统计；首次采样前返回 `{"ready":false}`。 |
+| `GET /api/health` | 关闭时返回 `{"enabled":false,"ready":false,"state":"off"}`；开启后续期 10 秒租约并返回启动状态或完整快照。 |
+| `POST /api/health/control` | 接收 `{"enabled":true}` 或 `{"enabled":false}`，动态启动或停止健康任务。 |
 | `GET /api/inference` | 返回最近一次预测、动态类别分数、耗时、JPEG 长度、序列号和更新时间；首次结果前返回 `{"ready":false}`。 |
 | `GET /api/inference/image?sequence=N` | 返回当前推理序列对应的 JPEG；过期序列返回 HTTP 409。 |
 
@@ -186,10 +194,14 @@ file capture.jpg
 响应应包含 `Content-Type: image/jpeg`、`X-Frame-Width: 128` 和
 `X-Frame-Height: 128`。
 
-可通过以下命令查看最新运行健康快照：
+可通过以下命令开启、查看并关闭运行健康监控：
 
 ```bash
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"enabled":true}' http://192.168.4.1/api/health/control
 curl http://192.168.4.1/api/health
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"enabled":false}' http://192.168.4.1/api/health/control
 ```
 
 ## 验证

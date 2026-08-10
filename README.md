@@ -19,8 +19,8 @@ and runs a MobileNetV1 waste classifier on-device.
 - A local Python tool for continuous dataset capture without rebuilding the
   firmware.
 - Serialized camera-frame ownership across streaming, capture, and inference.
-- A runtime health snapshot covering inference progress, task stack headroom,
-  and internal/PSRAM heap state.
+- On-demand runtime health monitoring with inference progress, task stack
+  headroom, and short memory trends on the dashboard.
 
 ## Requirements
 
@@ -55,9 +55,9 @@ frame concurrently.
 ### MobileNetV1 inference
 
 After the camera and SoftAP start, the `ei_inference` task runs once every two
-seconds on CPU1. CPU0 remains available for Wi-Fi and HTTP work. The health
-monitor starts next, and the HTTP services are exposed only after both tasks
-start successfully.
+seconds on CPU1. CPU0 remains available for Wi-Fi and HTTP work. HTTP services
+are then exposed; runtime health monitoring remains off until the dashboard
+explicitly enables it.
 
 Each inference iteration:
 
@@ -93,11 +93,19 @@ inference runtime and generated model.
 
 ### Runtime health monitoring
 
-The unpinned `runtime_health` task runs once per second at priority 1. It
-records inference attempts, successes, failures, consecutive failures, last
-error, latest and maximum execution time, and inference/task stack high-water
-marks. It also samples current, minimum, and largest-free-block values for
-internal memory and PSRAM.
+Runtime health monitoring is off after boot. The dashboard's `Runtime health`
+switch dynamically creates the unpinned priority-1 `runtime_health` task;
+turning the switch off lets the task exit safely and releases its task stack.
+While enabled, it samples once per second and records inference attempts,
+successes, failures, consecutive failures, last error, latest and maximum
+execution time, task stack high-water marks, and current/minimum/largest-block
+statistics for internal memory and PSRAM.
+
+Each dashboard request refreshes a 10-second board-side lease. Closing the
+page, leaving it backgrounded long enough, or losing Wi-Fi therefore stops the
+health task automatically after the lease expires. The two trend charts retain
+only the latest 60 distinct samples in browser memory; the board stores no
+history and writes nothing to flash.
 
 The snapshot begins in `starting` with a seven-second startup grace period.
 After the first successful result, a result older than six seconds or three
@@ -154,6 +162,8 @@ Image preview ready at http://192.168.4.1/
 3. The left panel starts the native MJPEG live preview automatically.
 4. The right panel shows the exact 128x128 JPEG used by the latest inference.
 5. The result area updates the prediction, all class scores, and timing data.
+6. Turn on `Runtime health` when needed to view current metrics and 60-second
+   trends; turning it off stops the board-side health task.
 
 Losing normal internet access while connected to this standalone access point
 is expected. The dashboard polls metadata once per second and requests the
@@ -191,7 +201,8 @@ gallery and browser memory; every successful frame remains on disk. Capturing
 | --- | --- |
 | `GET /capture` | Returns one fresh `image/jpeg`. |
 | `GET /api/status` | Returns camera readiness, counters, last JPEG length, free heap, and free PSRAM. |
-| `GET /api/health` | Returns the latest runtime health state, inference counters/timing, stack high-water marks, and internal/PSRAM heap statistics; returns `{"ready":false}` before the first sample. |
+| `GET /api/health` | Returns `{"enabled":false,"ready":false,"state":"off"}` while disabled; while enabled it refreshes the 10-second lease and returns starting state or a complete snapshot. |
+| `POST /api/health/control` | Accepts `{"enabled":true}` or `{"enabled":false}` to dynamically start or stop the health task. |
 | `GET /api/inference` | Returns the latest prediction, dynamic scores, timing, JPEG length, sequence, and age, or `{"ready":false}` before the first result. |
 | `GET /api/inference/image?sequence=N` | Returns the JPEG for the current inference sequence; stale sequences receive HTTP 409. |
 
@@ -205,10 +216,14 @@ file capture.jpg
 The response should contain `Content-Type: image/jpeg`,
 `X-Frame-Width: 128`, and `X-Frame-Height: 128`.
 
-To inspect the latest runtime health snapshot:
+To enable, inspect, and disable runtime health monitoring:
 
 ```bash
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"enabled":true}' http://192.168.4.1/api/health/control
 curl http://192.168.4.1/api/health
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"enabled":false}' http://192.168.4.1/api/health/control
 ```
 
 ## Verification

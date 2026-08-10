@@ -408,11 +408,11 @@ git commit -m "feat: add runtime health dashboard panel"
 - Consumes: completed lifecycle, HTTP API, and dashboard behavior from Tasks 1–3.
 - Produces: build/test evidence and user-facing operation documentation.
 
-- [ ] **Step 1: Update public documentation**
+- [x] **Step 1: Update public documentation**
 
 Document that monitoring is off after boot, the dashboard switch starts it, GET polling renews a 10-second lease, direct page closure causes automatic stop, and history is browser-only. Add both API endpoints and the three response forms (off, starting, ready). Update the architecture description so `main` no longer starts `HEALTH` directly.
 
-- [ ] **Step 2: Run the complete host suite**
+- [x] **Step 2: Run the complete host suite**
 
 Run:
 
@@ -422,7 +422,7 @@ python3 -m unittest discover -s tests -v
 
 Expected: every discovered test passes with no skips except an explicitly reported missing optional Node runtime; on this workstation Node is present, so the dashboard behavior test must run.
 
-- [ ] **Step 3: Compile every Python test module**
+- [x] **Step 3: Compile every Python test module**
 
 Run:
 
@@ -432,7 +432,7 @@ python3 -m py_compile tests/*.py
 
 Expected: exit status 0 and no output.
 
-- [ ] **Step 4: Build the ESP32-S3 firmware**
+- [x] **Step 4: Build the ESP32-S3 firmware**
 
 Run from the feature worktree:
 
@@ -443,11 +443,11 @@ idf.py -B build-esp32s3 -D SDKCONFIG=sdkconfig.esp32s3 build
 
 Expected: ESP-IDF 5.5.4 build succeeds for ESP32-S3, the application fits the 4 MiB factory partition, and the size output is recorded in the acceptance document.
 
-- [ ] **Step 5: Write software-verification evidence without claiming hardware completion**
+- [x] **Step 5: Write software-verification evidence without claiming hardware completion**
 
 Create `docs/acceptance/v0.3.0-runtime-health-dashboard.md` with exact test counts, build hash/version, binary size/free partition space, and a hardware checklist explicitly marked pending. Do not mark the release complete or create a tag yet.
 
-- [ ] **Step 6: Commit documentation and software evidence**
+- [x] **Step 6: Commit documentation and software evidence**
 
 ```bash
 git add README.md README.zh-CN.md docs/superpowers/specs/2026-08-10-runtime-health-dashboard-control-design.md docs/acceptance/v0.3.0-runtime-health-dashboard.md
