@@ -259,7 +259,7 @@ git commit -m "feat: add readable health chart scales"
 - Consumes: dashboard behavior from Task 1 and the existing ESP32-S3 build configuration.
 - Produces: a reproducible software and phone acceptance record for the exact Git commit and firmware version.
 
-- [ ] **Step 1: Run the complete host suite**
+- [x] **Step 1: Run the complete host suite**
 
 Run:
 
@@ -270,7 +270,7 @@ python3 -m py_compile tests/*.py
 
 Expected: all tests PASS and Python compilation exits with status 0.
 
-- [ ] **Step 2: Build the ESP32-S3 firmware**
+- [x] **Step 2: Build the ESP32-S3 firmware**
 
 Run after activating ESP-IDF 5.5.4:
 
@@ -280,7 +280,7 @@ idf.py -B build-esp32s3 -D SDKCONFIG=sdkconfig.esp32s3 build
 
 Expected: build succeeds, the application fits the 4 MiB partition, and the output reports the exact Git-derived application version.
 
-- [ ] **Step 3: Flash and inspect boot behavior**
+- [x] **Step 3: Flash and inspect boot behavior**
 
 Run against the discovered `/dev/cu.usbmodem*` port:
 
@@ -290,7 +290,7 @@ idf.py -B build-esp32s3 -D SDKCONFIG=sdkconfig.esp32s3 -p /dev/cu.usbmodem5B9000
 
 Expected: flash hashes verify, the board hard-resets, camera/inference/HTTP services start, and health monitoring remains off by default.
 
-- [ ] **Step 4: Perform focused phone acceptance**
+- [x] **Step 4: Perform focused phone acceptance**
 
 On a phone connected to `ESP32S3-CAPTURE`, open `http://192.168.4.1/`, enable health monitoring, and confirm:
 
@@ -301,7 +301,7 @@ On a phone connected to `ESP32S3-CAPTURE`, open `http://192.168.4.1/`, enable he
 5. disabling monitoring restores the exact disabled copy and removes the health task;
 6. inference continues without watchdog, panic, or reboot output.
 
-- [ ] **Step 5: Update and commit the acceptance record**
+- [x] **Step 5: Update and commit the acceptance record**
 
 Record the exact commit, firmware version, host-test count, build size, phone observations, and final status in `docs/acceptance/v0.3.0-runtime-health-dashboard.md`.
 
