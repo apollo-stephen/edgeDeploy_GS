@@ -35,7 +35,7 @@
 - Produces: `chartPath(values: number[], scale: ChartScale): string` using the shared plot rectangle.
 - Produces DOM values: `latencyCurrent`, `latencyTickTop`, `latencyTickMiddle`, `latencyTickBottom`, `latencyAge`, `memoryFreeValue`, `memoryLargestValue`, `memoryTickTop`, `memoryTickMiddle`, `memoryTickBottom`, and `memoryAge`.
 
-- [ ] **Step 1: Extend the behavior harness with failing scale assertions**
+- [x] **Step 1: Extend the behavior harness with failing scale assertions**
 
 After appending samples 1 through 65, add literal assertions that require the new visible behavior:
 
@@ -77,7 +77,7 @@ for (const id of [
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -87,7 +87,7 @@ python3 -m unittest tests.test_http_capture_component.HttpCaptureComponentBehavi
 
 Expected: FAIL because `latencyCurrent` and the axis-label elements are not populated by the current dashboard.
 
-- [ ] **Step 3: Add the SVG frame and latest-value elements**
+- [x] **Step 3: Add the SVG frame and latest-value elements**
 
 In `dashboard_page.c`, change each chart to use a header row and a `0 0 300 118` view box. Use a plot rectangle from X `44` to `292` and Y `10` to `88`:
 
@@ -144,7 +144,7 @@ Add compact CSS that keeps labels legible and allows the memory legend to wrap:
 .chart-legend{flex-wrap:wrap}
 ```
 
-- [ ] **Step 4: Implement the shared rounded scale and rendering logic**
+- [x] **Step 4: Implement the shared rounded scale and rendering logic**
 
 Register the new elements with `document.getElementById`. Replace the current implicit min/max path generator with these behaviors:
 
@@ -199,7 +199,7 @@ function chartAgeLabel(){
   const first=Number(healthHistory[0].monitor_uptime_ms);
   const last=Number(healthHistory[healthHistory.length-1].monitor_uptime_ms);
   if(!Number.isFinite(first)||!Number.isFinite(last)||last<first)return'—';
-  return`${Math.min(59,Math.round((last-first)/1000))} 秒前`;
+  return`${Math.round((last-first)/1000)} 秒前`;
 }
 function renderHealthCharts(){
   if(healthHistory.length===0){clearHealthHistory();return;}
@@ -233,7 +233,7 @@ Register every referenced DOM element with `document.getElementById` before
 these helpers run. Extend `clearHealthHistory()` so every new dynamic label
 becomes `—` while the static right label remains `现在`.
 
-- [ ] **Step 5: Run the focused behavior test and verify GREEN**
+- [x] **Step 5: Run the focused behavior test and verify GREEN**
 
 Run:
 
@@ -243,7 +243,7 @@ python3 -m unittest tests.test_http_capture_component -v
 
 Expected: all four HTTP dashboard behavior tests PASS, with no `NaN` or `Infinity` in chart paths.
 
-- [ ] **Step 6: Commit the chart implementation**
+- [x] **Step 6: Commit the chart implementation**
 
 ```bash
 git add components/HTTP_CAPTURE/dashboard_page.c tests/test_http_capture_component.py
