@@ -13,6 +13,19 @@ typedef enum {
     HEALTH_STATE_DEGRADED,
 } health_state_t;
 
+typedef enum {
+    HEALTH_MONITOR_OFF,
+    HEALTH_MONITOR_STARTING,
+    HEALTH_MONITOR_RUNNING,
+    HEALTH_MONITOR_STOPPING,
+} health_monitor_lifecycle_t;
+
+typedef struct {
+    bool enabled;
+    bool ready;
+    health_monitor_lifecycle_t lifecycle;
+} health_monitor_status_t;
+
 #define HEALTH_REASON_STARTUP_TIMEOUT (1U << 0)
 #define HEALTH_REASON_INFERENCE_STALE (1U << 1)
 #define HEALTH_REASON_CONSECUTIVE_FAILURES (1U << 2)
@@ -40,7 +53,9 @@ typedef struct {
 extern "C" {
 #endif
 
-esp_err_t health_start(void);
+esp_err_t health_set_enabled(bool enabled);
+esp_err_t health_get_monitor_status(health_monitor_status_t *status);
+esp_err_t health_refresh_lease(void);
 esp_err_t health_get_snapshot(health_snapshot_t *snapshot);
 const char *health_state_name(health_state_t state);
 

@@ -69,7 +69,7 @@
   - Existing `esp_err_t health_get_snapshot(health_snapshot_t *snapshot)` remains side-effect free.
 - Consumes: existing inference runtime statistics and heap/stack sampling functions.
 
-- [ ] **Step 1: Rewrite lifecycle tests to express the new default-off contract**
+- [x] **Step 1: Rewrite lifecycle tests to express the new default-off contract**
 
 Add named scenarios `control`, `lease`, and `restart` to `tests/host/health_component_test.c`. The core assertions must include:
 
@@ -94,7 +94,7 @@ assert(health_test_lease_expired(s_now_us));
 
 Extend the FreeRTOS fakes to record `xTaskNotifyGive()`, `ulTaskNotifyTake()`, and `vTaskDelete()` so an explicit stop can synchronously drive the captured task to its exit path. Preserve the existing transition and resource-snapshot assertions.
 
-- [ ] **Step 2: Run the health tests and verify the new contract fails**
+- [x] **Step 2: Run the health tests and verify the new contract fails**
 
 Run:
 
@@ -104,7 +104,7 @@ python3 -m unittest tests.test_health_component -v
 
 Expected: compilation fails because the lifecycle/status types, control functions, lease test helper, and task-notification declarations do not exist.
 
-- [ ] **Step 3: Add the public lifecycle API and host FreeRTOS declarations**
+- [x] **Step 3: Add the public lifecycle API and host FreeRTOS declarations**
 
 Add to `health.h`:
 
@@ -138,7 +138,7 @@ void vTaskDelete(TaskHandle_t task);
 
 Keep `health_test_lease_expired(uint64_t now_us)` in `health_internal.h`; it must evaluate production lease state without advancing the clock.
 
-- [ ] **Step 4: Implement the lifecycle, lease, and self-exit path**
+- [x] **Step 4: Implement the lifecycle, lease, and self-exit path**
 
 Replace unconditional `health_start()` behavior with:
 
@@ -163,7 +163,7 @@ esp_err_t health_refresh_lease(void)
 
 The task loop must sample immediately, then block with `ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000))`. Before every sample it checks the stop request and lease. On exit it resets readiness/snapshot state, sets lifecycle `OFF`, clears its handle, calls `vTaskDelete(NULL)`, and returns for host-test fakes. Explicit stop sets `STOPPING`, notifies the task, and waits in bounded 10 ms intervals until `OFF` or 2 seconds elapse. Keep all shared state copies protected by the component's existing synchronization mechanism; never call `vTaskDelete()` on the health task from the HTTP/control caller.
 
-- [ ] **Step 5: Remove boot-time health startup and update startup integration expectations**
+- [x] **Step 5: Remove boot-time health startup and update startup integration expectations**
 
 Delete the `health_start()` call and its fail-fast branch from `main/main.c`, remove the direct `HEALTH` entry from `main/CMakeLists.txt`, and change the successful startup order to:
 
@@ -179,7 +179,7 @@ const enum call_id expected[] = {
 
 Remove `CALL_HEALTH_START`, the `health_start()` fake, and the `health-failure` scenario from the startup integration test and Python scenario list.
 
-- [ ] **Step 6: Run focused lifecycle and startup tests**
+- [x] **Step 6: Run focused lifecycle and startup tests**
 
 Run:
 
@@ -189,7 +189,7 @@ python3 -m unittest tests.test_health_component tests.test_http_image_transfer_i
 
 Expected: all health lifecycle/resource scenarios and every startup fail-fast scenario pass.
 
-- [ ] **Step 7: Commit the lifecycle slice**
+- [x] **Step 7: Commit the lifecycle slice**
 
 ```bash
 git add components/HEALTH main tests/host/health_component_test.c tests/host/include/freertos/task.h tests/host/http_image_transfer_integration_test.c tests/test_health_component.py tests/test_http_image_transfer_integration.py

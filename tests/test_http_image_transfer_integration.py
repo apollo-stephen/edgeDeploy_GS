@@ -28,8 +28,6 @@ class HttpImageTransferStartupTest(unittest.TestCase):
                     str(ROOT / "components/HTTP_CAPTURE/include"),
                     "-I",
                     str(ROOT / "components/INFERENCE/include"),
-                    "-I",
-                    str(ROOT / "components/HEALTH/include"),
                     str(ROOT / "tests/host/http_image_transfer_integration_test.c"),
                     str(ROOT / "main/main.c"),
                     "-o",
@@ -51,10 +49,9 @@ class HttpImageTransferStartupTest(unittest.TestCase):
                 "nvs-recovery",
                 "camera-failure",
                 "wifi-failure",
-                "http-failure",
-                "inference-failure",
-                "health-failure",
-            ):
+                    "http-failure",
+                    "inference-failure",
+                ):
                 with self.subTest(scenario=scenario):
                     run_result = subprocess.run(
                         [str(executable), scenario],

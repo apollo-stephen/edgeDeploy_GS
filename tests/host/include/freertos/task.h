@@ -21,7 +21,10 @@ BaseType_t xTaskCreate(TaskFunction_t task,
                        void *argument,
                        UBaseType_t priority,
                        TaskHandle_t *task_handle);
+BaseType_t xTaskNotifyGive(TaskHandle_t task);
+uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t timeout);
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task);
+void vTaskDelete(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
 #ifdef __cplusplus
 }

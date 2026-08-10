@@ -45,6 +45,9 @@ class HealthComponentBehaviorTest(unittest.TestCase):
 
             scenarios = {
                 "lifecycle": "health lifecycle behavior passed",
+                "control": "health runtime control behavior passed",
+                "lease": "health client lease behavior passed",
+                "restart": "health monitor restart behavior passed",
                 "transitions": "health transition behavior passed",
                 "resources": "health resource snapshot behavior passed",
                 "stats-unavailable": (

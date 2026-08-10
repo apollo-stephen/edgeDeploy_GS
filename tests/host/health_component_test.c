@@ -30,6 +30,10 @@ static TaskHandle_t s_task_handle = &s_fake_task_storage;
 static configSTACK_DEPTH_TYPE s_task_stack_depth;
 static UBaseType_t s_task_priority;
 static UBaseType_t s_stack_high_water_mark = 1536;
+static int s_task_notify_calls;
+static int s_task_delete_calls;
+static bool s_notification_pending;
+static bool s_run_task_during_delay;
 static int64_t s_now_us;
 static esp_err_t s_inference_result = ESP_OK;
 static inference_runtime_stats_t s_inference_stats;
@@ -118,9 +122,40 @@ UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
     return s_stack_high_water_mark;
 }
 
+BaseType_t xTaskNotifyGive(TaskHandle_t task)
+{
+    assert(task == s_task_handle);
+    ++s_task_notify_calls;
+    s_notification_pending = true;
+    return pdPASS;
+}
+
+uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t timeout)
+{
+    assert(clear_on_exit == pdTRUE);
+    assert(timeout == pdMS_TO_TICKS(1000));
+    const uint32_t received = s_notification_pending ? 1U : 0U;
+    if (clear_on_exit == pdTRUE) {
+        s_notification_pending = false;
+    }
+    return received;
+}
+
+void vTaskDelete(TaskHandle_t task)
+{
+    assert(task == NULL);
+    ++s_task_delete_calls;
+}
+
 void vTaskDelay(TickType_t ticks)
 {
-    assert(ticks == pdMS_TO_TICKS(1000));
+    assert(ticks == pdMS_TO_TICKS(10));
+    s_now_us += 10000;
+    if (s_run_task_during_delay) {
+        s_run_task_during_delay = false;
+        assert(s_task_function != NULL);
+        s_task_function(NULL);
+    }
 }
 
 static bool is_internal_caps(unsigned int capabilities)
@@ -191,8 +226,8 @@ static void start_successfully(void)
     health_snapshot_t snapshot = {0};
     assert(health_get_snapshot(NULL) == ESP_ERR_INVALID_ARG);
     assert(health_get_snapshot(&snapshot) == ESP_ERR_NOT_FOUND);
-    assert(health_start() == ESP_OK);
-    assert(health_start() == ESP_ERR_INVALID_STATE);
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(health_set_enabled(true) == ESP_OK);
     assert(s_mutex_create_calls == 1);
     assert(s_task_create_calls == 1);
     assert(s_task_function != NULL);
@@ -204,25 +239,107 @@ static void start_successfully(void)
 static void verify_lifecycle(void)
 {
     s_create_mutex = false;
-    assert(health_start() == ESP_ERR_NO_MEM);
+    assert(health_set_enabled(true) == ESP_ERR_NO_MEM);
     assert(s_task_create_calls == 0);
     assert(s_mutex_delete_calls == 0);
 
     s_create_mutex = true;
     s_task_result = pdFAIL;
-    assert(health_start() == ESP_FAIL);
+    assert(health_set_enabled(true) == ESP_FAIL);
     assert(s_task_create_calls == 1);
     assert(s_mutex_delete_calls == 1);
 
     s_task_result = pdPASS;
-    assert(health_start() == ESP_OK);
-    assert(health_start() == ESP_ERR_INVALID_STATE);
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(health_set_enabled(true) == ESP_OK);
     assert(s_task_create_calls == 2);
     assert(strcmp(health_state_name(HEALTH_STATE_STARTING), "starting") == 0);
     assert(strcmp(health_state_name(HEALTH_STATE_HEALTHY), "healthy") == 0);
     assert(strcmp(health_state_name(HEALTH_STATE_DEGRADED), "degraded") == 0);
     assert(health_state_name((health_state_t)99) == NULL);
     puts("health lifecycle behavior passed");
+}
+
+static void verify_control(void)
+{
+    health_monitor_status_t status = {0};
+    health_snapshot_t snapshot = {0};
+
+    assert(health_get_monitor_status(&status) == ESP_OK);
+    assert(!status.enabled);
+    assert(!status.ready);
+    assert(status.lifecycle == HEALTH_MONITOR_OFF);
+    assert(health_get_snapshot(&snapshot) == ESP_ERR_NOT_FOUND);
+
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(s_task_create_calls == 1);
+    assert(health_get_monitor_status(&status) == ESP_OK);
+    assert(status.enabled);
+    assert(status.lifecycle == HEALTH_MONITOR_RUNNING);
+
+    s_run_task_during_delay = true;
+    assert(health_set_enabled(false) == ESP_OK);
+    assert(s_task_notify_calls == 1);
+    assert(s_task_delete_calls == 1);
+    assert(health_get_monitor_status(&status) == ESP_OK);
+    assert(!status.enabled);
+    assert(!status.ready);
+    assert(status.lifecycle == HEALTH_MONITOR_OFF);
+    assert(health_get_snapshot(&snapshot) == ESP_ERR_NOT_FOUND);
+    assert(health_set_enabled(false) == ESP_OK);
+    assert(s_task_notify_calls == 1);
+    puts("health runtime control behavior passed");
+}
+
+static void verify_lease(void)
+{
+    health_monitor_status_t status = {0};
+    s_now_us = 1000000;
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(!health_test_lease_expired(10999999));
+    assert(health_test_lease_expired(11000000));
+
+    s_now_us = 7000000;
+    assert(health_refresh_lease() == ESP_OK);
+    assert(!health_test_lease_expired(16999999));
+    assert(health_test_lease_expired(17000000));
+
+    s_now_us = 17000000;
+    assert(s_task_function != NULL);
+    s_task_function(NULL);
+    assert(s_task_delete_calls == 1);
+    assert(health_get_monitor_status(&status) == ESP_OK);
+    assert(status.lifecycle == HEALTH_MONITOR_OFF);
+    assert(!status.enabled);
+    assert(health_refresh_lease() == ESP_ERR_INVALID_STATE);
+    puts("health client lease behavior passed");
+}
+
+static void verify_restart(void)
+{
+    health_snapshot_t snapshot = {0};
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(health_sample_once() == ESP_OK);
+    assert(health_sample_once() == ESP_OK);
+    snapshot = get_snapshot();
+    assert(snapshot.sequence == 2);
+
+    s_run_task_during_delay = true;
+    assert(health_set_enabled(false) == ESP_OK);
+    assert(health_get_snapshot(&snapshot) == ESP_ERR_NOT_FOUND);
+
+    assert(health_set_enabled(true) == ESP_OK);
+    assert(s_task_create_calls == 2);
+    assert(s_mutex_create_calls == 1);
+    assert(health_get_snapshot(&snapshot) == ESP_ERR_NOT_FOUND);
+    assert(health_sample_once() == ESP_OK);
+    snapshot = get_snapshot();
+    assert(snapshot.sequence == 1);
+
+    s_run_task_during_delay = true;
+    assert(health_set_enabled(false) == ESP_OK);
+    puts("health monitor restart behavior passed");
 }
 
 static void verify_transitions(void)
@@ -327,6 +444,15 @@ int main(int argc, char **argv)
     assert(argc == 2);
     if (strcmp(argv[1], "lifecycle") == 0) {
         verify_lifecycle();
+    }
+    else if (strcmp(argv[1], "control") == 0) {
+        verify_control();
+    }
+    else if (strcmp(argv[1], "lease") == 0) {
+        verify_lease();
+    }
+    else if (strcmp(argv[1], "restart") == 0) {
+        verify_restart();
     }
     else if (strcmp(argv[1], "transitions") == 0) {
         verify_transitions();
