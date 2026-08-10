@@ -16,6 +16,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "health.h"
 #include "inference.h"
 #include "wifi_ap.h"
 
@@ -247,6 +248,95 @@ static esp_err_t status_get_handler(httpd_req_t *request)
 
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_send(request, response, length);
+}
+
+static esp_err_t health_get_handler(httpd_req_t *request)
+{
+    health_snapshot_t snapshot = {0};
+    const esp_err_t snapshot_err = health_get_snapshot(&snapshot);
+
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (snapshot_err == ESP_ERR_NOT_FOUND) {
+        return httpd_resp_sendstr(request, "{\"ready\":false}");
+    }
+    if (snapshot_err != ESP_OK || !snapshot.ready) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Health snapshot unavailable");
+    }
+
+    const char *state_name = health_state_name(snapshot.state);
+    if (state_name == NULL) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Invalid health state");
+    }
+
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    const uint64_t sample_age_ms = now_us >= snapshot.sampled_us
+                                       ? (now_us - snapshot.sampled_us) / 1000U
+                                       : 0U;
+    char response[1536];
+    const int length = snprintf(
+        response,
+        sizeof(response),
+        "{\"ready\":true,\"sequence\":%" PRIu32
+        ",\"state\":\"%s\",\"reason_flags\":%" PRIu32
+        ",\"sample_age_ms\":%" PRIu64
+        ",\"uptime_ms\":%" PRIu64
+        ",\"inference_age_ms\":%" PRIu64
+        ",\"inference\":{\"attempt_running\":%s"
+        ",\"attempt_count\":%" PRIu32
+        ",\"success_count\":%" PRIu32
+        ",\"failure_count\":%" PRIu32
+        ",\"consecutive_failure_count\":%" PRIu32
+        ",\"last_error\":%d"
+        ",\"last_attempt_started_ms\":%" PRIu64
+        ",\"last_attempt_finished_ms\":%" PRIu64
+        ",\"last_success_ms\":%" PRIu64
+        ",\"last_duration_ms\":%" PRIu64
+        ",\"max_duration_ms\":%" PRIu64
+        ",\"stack_high_water_mark_bytes\":%" PRIu32 "}"
+        ",\"health_stack_high_water_mark_bytes\":%" PRIu32
+        ",\"memory\":{\"internal\":{\"free_bytes\":%zu"
+        ",\"minimum_free_bytes\":%zu"
+        ",\"largest_free_block_bytes\":%zu}"
+        ",\"psram\":{\"free_bytes\":%zu"
+        ",\"minimum_free_bytes\":%zu"
+        ",\"largest_free_block_bytes\":%zu}}}",
+        snapshot.sequence,
+        state_name,
+        snapshot.reason_flags,
+        sample_age_ms,
+        snapshot.uptime_us / 1000U,
+        snapshot.inference_age_us / 1000U,
+        snapshot.inference.attempt_running ? "true" : "false",
+        snapshot.inference.attempt_count,
+        snapshot.inference.success_count,
+        snapshot.inference.failure_count,
+        snapshot.inference.consecutive_failure_count,
+        snapshot.inference.last_error,
+        snapshot.inference.last_attempt_started_us / 1000U,
+        snapshot.inference.last_attempt_finished_us / 1000U,
+        snapshot.inference.last_success_us / 1000U,
+        snapshot.inference.last_duration_us / 1000U,
+        snapshot.inference.max_duration_us / 1000U,
+        snapshot.inference.stack_high_water_mark_bytes,
+        snapshot.health_stack_high_water_mark_bytes,
+        snapshot.internal_free_bytes,
+        snapshot.internal_minimum_free_bytes,
+        snapshot.internal_largest_free_block_bytes,
+        snapshot.psram_free_bytes,
+        snapshot.psram_minimum_free_bytes,
+        snapshot.psram_largest_free_block_bytes);
+
+    if (length < 0 || length >= (int)sizeof(response)) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Health response overflow");
+    }
     return httpd_resp_send(request, response, length);
 }
 
@@ -596,6 +686,12 @@ static esp_err_t register_control_handlers(httpd_handle_t server)
         .handler = status_get_handler,
         .user_ctx = NULL,
     };
+    const httpd_uri_t health_uri = {
+        .uri = "/api/health",
+        .method = HTTP_GET,
+        .handler = health_get_handler,
+        .user_ctx = NULL,
+    };
     const httpd_uri_t inference_uri = {
         .uri = "/api/inference",
         .method = HTTP_GET,
@@ -615,6 +711,9 @@ static esp_err_t register_control_handlers(httpd_handle_t server)
     }
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &status_uri);
+    }
+    if (err == ESP_OK) {
+        err = httpd_register_uri_handler(server, &health_uri);
     }
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &inference_uri);

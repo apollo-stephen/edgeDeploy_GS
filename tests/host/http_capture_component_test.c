@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "freertos/task.h"
+#include "health.h"
 #include "http_capture.h"
 #include "inference.h"
 #include "wifi_ap.h"
@@ -49,7 +50,9 @@ static int s_heap_allocations;
 static int s_heap_frees;
 static esp_err_t s_metadata_result = ESP_ERR_NOT_FOUND;
 static esp_err_t s_jpeg_result = ESP_OK;
+static esp_err_t s_health_result = ESP_ERR_NOT_FOUND;
 static inference_snapshot_metadata_t s_inference_metadata;
+static health_snapshot_t s_health_snapshot;
 static uint8_t s_inference_jpeg[] = {0xff, 0xd8, 0x44, 0x55, 0xff, 0xd9};
 static uint32_t s_requested_inference_sequence;
 
@@ -345,6 +348,30 @@ esp_err_t inference_copy_latest_jpeg(uint32_t expected_sequence,
     memcpy(destination, s_inference_jpeg, sizeof(s_inference_jpeg));
     *jpeg_bytes = sizeof(s_inference_jpeg);
     return ESP_OK;
+}
+
+esp_err_t health_get_snapshot(health_snapshot_t *snapshot)
+{
+    assert(snapshot != NULL);
+    if (s_health_result != ESP_OK) {
+        return s_health_result;
+    }
+    *snapshot = s_health_snapshot;
+    return ESP_OK;
+}
+
+const char *health_state_name(health_state_t state)
+{
+    switch (state) {
+        case HEALTH_STATE_STARTING:
+            return "starting";
+        case HEALTH_STATE_HEALTHY:
+            return "healthy";
+        case HEALTH_STATE_DEGRADED:
+            return "degraded";
+        default:
+            return NULL;
+    }
 }
 
 static const httpd_uri_t *find_uri(size_t server_index, const char *uri)
@@ -649,6 +676,101 @@ static void verify_status(const httpd_uri_t *status_uri)
     reset_request(&request);
 }
 
+static void prepare_health_snapshot(void)
+{
+    memset(&s_health_snapshot, 0, sizeof(s_health_snapshot));
+    s_health_snapshot.ready = true;
+    s_health_snapshot.sequence = 7;
+    s_health_snapshot.state = HEALTH_STATE_HEALTHY;
+    s_health_snapshot.reason_flags = 0;
+    s_health_snapshot.sampled_us = 12000000;
+    s_health_snapshot.uptime_us = 11000000;
+    s_health_snapshot.inference_age_us = 250000;
+    s_health_snapshot.inference.attempt_running = false;
+    s_health_snapshot.inference.attempt_count = 5;
+    s_health_snapshot.inference.success_count = 4;
+    s_health_snapshot.inference.failure_count = 1;
+    s_health_snapshot.inference.consecutive_failure_count = 0;
+    s_health_snapshot.inference.last_error = 0;
+    s_health_snapshot.inference.last_attempt_started_us = 11700000;
+    s_health_snapshot.inference.last_attempt_finished_us = 11832000;
+    s_health_snapshot.inference.last_success_us = 11832000;
+    s_health_snapshot.inference.last_duration_us = 132000;
+    s_health_snapshot.inference.max_duration_us = 149000;
+    s_health_snapshot.inference.stack_high_water_mark_bytes = 3072;
+    s_health_snapshot.health_stack_high_water_mark_bytes = 1536;
+    s_health_snapshot.internal_free_bytes = 123456;
+    s_health_snapshot.internal_minimum_free_bytes = 120000;
+    s_health_snapshot.internal_largest_free_block_bytes = 65536;
+    s_health_snapshot.psram_free_bytes = 654321;
+    s_health_snapshot.psram_minimum_free_bytes = 640000;
+    s_health_snapshot.psram_largest_free_block_bytes = 524288;
+}
+
+static void verify_health(const httpd_uri_t *health_uri)
+{
+    httpd_req_t request = {0};
+    s_health_result = ESP_ERR_NOT_FOUND;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_type, "application/json") == 0);
+    assert(strcmp(request.response_body, "{\"ready\":false}") == 0);
+    assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);
+    reset_request(&request);
+
+    prepare_health_snapshot();
+    s_fake_time_us = 12500000;
+    s_health_result = ESP_OK;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_type, "application/json") == 0);
+    assert(strstr(request.response_body, "\"ready\":true") != NULL);
+    assert(strstr(request.response_body, "\"sequence\":7") != NULL);
+    assert(strstr(request.response_body, "\"state\":\"healthy\"") != NULL);
+    assert(strstr(request.response_body, "\"reason_flags\":0") != NULL);
+    assert(strstr(request.response_body, "\"sample_age_ms\":500") != NULL);
+    assert(strstr(request.response_body, "\"uptime_ms\":11000") != NULL);
+    assert(strstr(request.response_body, "\"inference_age_ms\":250") != NULL);
+    assert(strstr(request.response_body, "\"attempt_running\":false") != NULL);
+    assert(strstr(request.response_body, "\"attempt_count\":5") != NULL);
+    assert(strstr(request.response_body, "\"success_count\":4") != NULL);
+    assert(strstr(request.response_body, "\"failure_count\":1") != NULL);
+    assert(strstr(request.response_body,
+                  "\"consecutive_failure_count\":0") != NULL);
+    assert(strstr(request.response_body, "\"last_error\":0") != NULL);
+    assert(strstr(request.response_body,
+                  "\"last_attempt_started_ms\":11700") != NULL);
+    assert(strstr(request.response_body,
+                  "\"last_attempt_finished_ms\":11832") != NULL);
+    assert(strstr(request.response_body, "\"last_success_ms\":11832") != NULL);
+    assert(strstr(request.response_body, "\"last_duration_ms\":132") != NULL);
+    assert(strstr(request.response_body, "\"max_duration_ms\":149") != NULL);
+    assert(strstr(request.response_body,
+                  "\"stack_high_water_mark_bytes\":3072") != NULL);
+    assert(strstr(request.response_body,
+                  "\"health_stack_high_water_mark_bytes\":1536") != NULL);
+    assert(strstr(request.response_body,
+                  "\"minimum_free_bytes\":120000") != NULL);
+    assert(strstr(request.response_body,
+                  "\"largest_free_block_bytes\":524288") != NULL);
+    reset_request(&request);
+
+    s_health_result = ESP_FAIL;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_500) == 0);
+    reset_request(&request);
+
+    s_health_result = ESP_OK;
+    s_health_snapshot.ready = false;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_500) == 0);
+    reset_request(&request);
+
+    s_health_snapshot.ready = true;
+    s_health_snapshot.state = (health_state_t)99;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_500) == 0);
+    reset_request(&request);
+}
+
 static void prepare_inference_metadata(void)
 {
     memset(&s_inference_metadata, 0, sizeof(s_inference_metadata));
@@ -781,7 +903,7 @@ int main(void)
     assert(s_heap_allocations == 1);
     assert(s_heap_frees == 0);
     assert(s_server_count == 2);
-    assert(s_uri_count[0] == 5);
+    assert(s_uri_count[0] == 6);
     assert(s_uri_count[1] == 1);
     assert(s_server_config[0].server_port == 80);
     assert(s_server_config[0].ctrl_port == 32768);
@@ -801,6 +923,7 @@ int main(void)
     const httpd_uri_t *index_uri = find_uri(0, "/");
     const httpd_uri_t *capture_uri = find_uri(0, "/capture");
     const httpd_uri_t *status_uri = find_uri(0, "/api/status");
+    const httpd_uri_t *health_uri = find_uri(0, "/api/health");
     const httpd_uri_t *inference_uri = find_uri(0, "/api/inference");
     const httpd_uri_t *inference_image_uri =
         find_uri(0, "/api/inference/image");
@@ -808,6 +931,7 @@ int main(void)
     assert(index_uri != NULL);
     assert(capture_uri != NULL);
     assert(status_uri != NULL);
+    assert(health_uri != NULL);
     assert(inference_uri != NULL);
     assert(inference_image_uri != NULL);
     assert(stream_uri != NULL);
@@ -817,6 +941,7 @@ int main(void)
     verify_capture_failures(capture_uri);
     verify_stream(stream_uri);
     verify_status(status_uri);
+    verify_health(health_uri);
     verify_inference_metadata(inference_uri);
     verify_inference_image(inference_image_uri);
     verify_stream_stops_cleanly(stream_uri);

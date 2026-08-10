@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "http_capture.c" "dashboard_page.c"
     INCLUDE_DIRS "include"
-    REQUIRES esp_http_server CAMERA WIFIAP INFERENCE esp_system heap
+    REQUIRES esp_http_server CAMERA WIFIAP INFERENCE HEALTH esp_system heap
     PRIV_REQUIRES esp_timer
 )
