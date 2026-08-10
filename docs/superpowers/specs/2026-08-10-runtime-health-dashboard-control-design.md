@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-10
 
-**Status:** Design approved; written specification pending final user review
+**Status:** Approved for implementation
 
 **Branch:** `feature/runtime-health-monitor`
 
