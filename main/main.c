@@ -1,6 +1,7 @@
 #include "CAMERA.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "health.h"
 #include "http_capture.h"
 #include "inference.h"
 #include "nvs_flash.h"
@@ -52,6 +53,14 @@ void app_main(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG,
                  "Inference task startup failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    err = health_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Health monitor startup failed: %s",
                  esp_err_to_name(err));
         return;
     }
