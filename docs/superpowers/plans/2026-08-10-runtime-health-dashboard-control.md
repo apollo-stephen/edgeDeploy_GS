@@ -210,7 +210,7 @@ git commit -m "feat: control runtime health lifecycle"
 - Consumes: `health_set_enabled()`, `health_get_monitor_status()`, `health_refresh_lease()`, and `health_get_snapshot()` from Task 1.
 - Produces: `POST /api/health/control` plus the revised `GET /api/health` contract.
 
-- [ ] **Step 1: Add failing route and JSON contract tests**
+- [x] **Step 1: Add failing route and JSON contract tests**
 
 Extend the host `httpd_req_t` with request-body storage and length, add `HTTP_POST`, and fake `httpd_req_recv()`. Register expectations for seven control routes and test:
 
@@ -230,7 +230,7 @@ assert(strcmp(request.response_body,
 
 Also assert that off GET is exactly `{"enabled":false,"ready":false,"state":"off"}`, starting GET refreshes the lease, ready GET contains `"enabled":true`, invalid/oversized/trailing input returns 400, start failure returns 500, and `{"enabled":false}` invokes a bounded stop.
 
-- [ ] **Step 2: Run the HTTP component test and verify failure**
+- [x] **Step 2: Run the HTTP component test and verify failure**
 
 Run:
 
@@ -240,7 +240,7 @@ python3 -m unittest tests.test_http_capture_component.HttpCaptureComponentBehavi
 
 Expected: compilation or assertions fail because POST request support, the control route, and enabled lifecycle JSON do not exist.
 
-- [ ] **Step 3: Implement strict control parsing and lifecycle responses**
+- [x] **Step 3: Implement strict control parsing and lifecycle responses**
 
 Add `health_control_post_handler()` using a fixed request buffer large enough for the two accepted payloads. Require the body, after permitted JSON whitespace, to contain exactly one boolean `enabled` member; reject extra keys, duplicate keys, non-booleans, truncated receives, and oversized bodies with `HTTPD_400`.
 
@@ -271,11 +271,11 @@ static esp_err_t send_health_monitor_state(httpd_req_t *request,
 
 In `GET /api/health`, query monitor status first. Return off without refreshing. If enabled, refresh the lease, then return starting or the existing ready snapshot with `"enabled":true` added before `sequence`.
 
-- [ ] **Step 4: Register the POST route and update handler capacity checks**
+- [x] **Step 4: Register the POST route and update handler capacity checks**
 
 Register `/api/health/control` after `/api/health`, update host route-count expectations from 6 to 7, and retain `max_uri_handlers == 8` so no server configuration expansion is needed.
 
-- [ ] **Step 5: Run the HTTP and startup integration tests**
+- [x] **Step 5: Run the HTTP and startup integration tests**
 
 Run:
 
@@ -285,7 +285,7 @@ python3 -m unittest tests.test_http_capture_component tests.test_http_image_tran
 
 Expected: control JSON, snapshot JSON, registration rollback, camera/stream behavior, and startup behavior all pass.
 
-- [ ] **Step 6: Commit the API slice**
+- [x] **Step 6: Commit the API slice**
 
 ```bash
 git add components/HTTP_CAPTURE/http_capture.c tests/host/http_capture_component_test.c tests/host/include/esp_http_server.h tests/test_http_capture_component.py

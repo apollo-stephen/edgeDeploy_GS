@@ -26,6 +26,7 @@
 #define STREAM_FRAME_PERIOD_MS 67
 #define STREAM_RETRY_DELAY_MS 20
 #define STREAM_MAX_CAPTURE_FAILURES 3
+#define HEALTH_CONTROL_BODY_MAX 64
 #define PART_BOUNDARY "123456789000000000000987654321"
 
 static const char *TAG = "http_capture";
@@ -251,16 +252,131 @@ static esp_err_t status_get_handler(httpd_req_t *request)
     return httpd_resp_send(request, response, length);
 }
 
+static esp_err_t send_health_monitor_state(httpd_req_t *request,
+                                           bool enabled,
+                                           bool ready,
+                                           const char *state_name)
+{
+    char response[96];
+    const int length = snprintf(response,
+                                sizeof(response),
+                                "{\"enabled\":%s,\"ready\":%s,"
+                                "\"state\":\"%s\"}",
+                                enabled ? "true" : "false",
+                                ready ? "true" : "false",
+                                state_name);
+    if (length < 0 || length >= (int)sizeof(response)) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Health state response overflow");
+    }
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_send(request, response, length);
+}
+
+static esp_err_t send_health_control_bad_request(httpd_req_t *request,
+                                                 const char *message)
+{
+    httpd_resp_set_status(request, HTTPD_400);
+    httpd_resp_set_type(request, "text/plain; charset=utf-8");
+    return httpd_resp_sendstr(request, message);
+}
+
+static const char *skip_json_space(const char *cursor)
+{
+    while (*cursor == ' ' || *cursor == '\t' ||
+           *cursor == '\r' || *cursor == '\n') {
+        ++cursor;
+    }
+    return cursor;
+}
+
+static bool parse_health_control_body(const char *body, bool *enabled)
+{
+    if (body == NULL || enabled == NULL) {
+        return false;
+    }
+    const char *cursor = skip_json_space(body);
+    if (*cursor++ != '{') {
+        return false;
+    }
+    cursor = skip_json_space(cursor);
+    static const char key[] = "\"enabled\"";
+    if (strncmp(cursor, key, sizeof(key) - 1U) != 0) {
+        return false;
+    }
+    cursor += sizeof(key) - 1U;
+    cursor = skip_json_space(cursor);
+    if (*cursor++ != ':') {
+        return false;
+    }
+    cursor = skip_json_space(cursor);
+    if (strncmp(cursor, "true", 4U) == 0) {
+        *enabled = true;
+        cursor += 4U;
+    }
+    else if (strncmp(cursor, "false", 5U) == 0) {
+        *enabled = false;
+        cursor += 5U;
+    }
+    else {
+        return false;
+    }
+    cursor = skip_json_space(cursor);
+    if (*cursor++ != '}') {
+        return false;
+    }
+    return *skip_json_space(cursor) == '\0';
+}
+
+static esp_err_t read_health_control_body(httpd_req_t *request,
+                                          char *body,
+                                          size_t capacity)
+{
+    if (request->content_len == 0U ||
+        request->content_len >= capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    size_t used = 0U;
+    while (used < request->content_len) {
+        const int received = httpd_req_recv(request,
+                                            body + used,
+                                            request->content_len - used);
+        if (received <= 0) {
+            return ESP_FAIL;
+        }
+        used += (size_t)received;
+    }
+    body[used] = '\0';
+    return ESP_OK;
+}
+
 static esp_err_t health_get_handler(httpd_req_t *request)
 {
+    health_monitor_status_t monitor = {0};
+    if (health_get_monitor_status(&monitor) != ESP_OK) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Health monitor status unavailable");
+    }
+    if (!monitor.enabled) {
+        return send_health_monitor_state(request, false, false, "off");
+    }
+    if (health_refresh_lease() != ESP_OK) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Health monitor lease unavailable");
+    }
+    if (!monitor.ready) {
+        return send_health_monitor_state(request, true, false, "starting");
+    }
+
     health_snapshot_t snapshot = {0};
     const esp_err_t snapshot_err = health_get_snapshot(&snapshot);
 
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    if (snapshot_err == ESP_ERR_NOT_FOUND) {
-        return httpd_resp_sendstr(request, "{\"ready\":false}");
-    }
     if (snapshot_err != ESP_OK || !snapshot.ready) {
         return httpd_resp_send_err(request,
                                    HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -282,7 +398,7 @@ static esp_err_t health_get_handler(httpd_req_t *request)
     const int length = snprintf(
         response,
         sizeof(response),
-        "{\"ready\":true,\"sequence\":%" PRIu32
+        "{\"enabled\":true,\"ready\":true,\"sequence\":%" PRIu32
         ",\"state\":\"%s\",\"reason_flags\":%" PRIu32
         ",\"sample_age_ms\":%" PRIu64
         ",\"uptime_ms\":%" PRIu64
@@ -338,6 +454,23 @@ static esp_err_t health_get_handler(httpd_req_t *request)
                                    "Health response overflow");
     }
     return httpd_resp_send(request, response, length);
+}
+
+static esp_err_t health_control_post_handler(httpd_req_t *request)
+{
+    char body[HEALTH_CONTROL_BODY_MAX];
+    bool enabled = false;
+    if (read_health_control_body(request, body, sizeof(body)) != ESP_OK ||
+        !parse_health_control_body(body, &enabled)) {
+        return send_health_control_bad_request(request,
+                                               "Invalid health control body");
+    }
+    if (health_set_enabled(enabled) != ESP_OK) {
+        return httpd_resp_send_err(request,
+                                   HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Health control failed");
+    }
+    return health_get_handler(request);
 }
 
 static esp_err_t inference_metadata_get_handler(httpd_req_t *request)
@@ -692,6 +825,12 @@ static esp_err_t register_control_handlers(httpd_handle_t server)
         .handler = health_get_handler,
         .user_ctx = NULL,
     };
+    const httpd_uri_t health_control_uri = {
+        .uri = "/api/health/control",
+        .method = HTTP_POST,
+        .handler = health_control_post_handler,
+        .user_ctx = NULL,
+    };
     const httpd_uri_t inference_uri = {
         .uri = "/api/inference",
         .method = HTTP_GET,
@@ -714,6 +853,9 @@ static esp_err_t register_control_handlers(httpd_handle_t server)
     }
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &health_uri);
+    }
+    if (err == ESP_OK) {
+        err = httpd_register_uri_handler(server, &health_control_uri);
     }
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &inference_uri);

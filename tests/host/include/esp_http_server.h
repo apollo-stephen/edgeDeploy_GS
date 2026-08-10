@@ -11,6 +11,9 @@ typedef void *httpd_handle_t;
 
 typedef struct httpd_req {
     const char *query_string;
+    const char *request_body;
+    size_t content_len;
+    size_t request_body_offset;
     const char *response_type;
     const char *response_status;
     const char *response_body;
@@ -40,6 +43,7 @@ typedef struct {
 } httpd_config_t;
 
 #define HTTP_GET 0
+#define HTTP_POST 1
 #define HTTPD_RESP_USE_STRLEN ((long)-1)
 #define HTTPD_400 "400 Bad Request"
 #define HTTPD_500 "500 Internal Server Error"
@@ -75,6 +79,9 @@ esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *body);
 esp_err_t httpd_resp_send_err(httpd_req_t *request,
                               httpd_err_code_t error,
                               const char *message);
+ssize_t httpd_req_recv(httpd_req_t *request,
+                       char *buffer,
+                       size_t buffer_length);
 size_t httpd_req_get_url_query_len(httpd_req_t *request);
 esp_err_t httpd_req_get_url_query_str(httpd_req_t *request,
                                       char *buffer,

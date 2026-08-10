@@ -51,8 +51,15 @@ static int s_heap_frees;
 static esp_err_t s_metadata_result = ESP_ERR_NOT_FOUND;
 static esp_err_t s_jpeg_result = ESP_OK;
 static esp_err_t s_health_result = ESP_ERR_NOT_FOUND;
+static esp_err_t s_health_status_result = ESP_OK;
+static esp_err_t s_health_control_result = ESP_OK;
+static esp_err_t s_health_refresh_result = ESP_OK;
 static inference_snapshot_metadata_t s_inference_metadata;
 static health_snapshot_t s_health_snapshot;
+static health_monitor_status_t s_health_monitor_status;
+static int s_health_control_calls;
+static bool s_health_control_enabled;
+static int s_health_refresh_calls;
 static uint8_t s_inference_jpeg[] = {0xff, 0xd8, 0x44, 0x55, 0xff, 0xd9};
 static uint32_t s_requested_inference_sequence;
 
@@ -191,6 +198,31 @@ esp_err_t httpd_resp_send_err(httpd_req_t *request,
     assert(error == HTTPD_500_INTERNAL_SERVER_ERROR);
     httpd_resp_set_status(request, HTTPD_500);
     return httpd_resp_sendstr(request, message);
+}
+
+ssize_t httpd_req_recv(httpd_req_t *request,
+                       char *buffer,
+                       size_t buffer_length)
+{
+    assert(request != NULL);
+    assert(buffer != NULL);
+    if (request->request_body == NULL ||
+        request->request_body_offset >= strlen(request->request_body)) {
+        return 0;
+    }
+    const size_t available = strlen(request->request_body) -
+                             request->request_body_offset;
+    const size_t remaining = request->content_len -
+                             request->request_body_offset;
+    size_t copy_length = available < remaining ? available : remaining;
+    if (copy_length > buffer_length) {
+        copy_length = buffer_length;
+    }
+    memcpy(buffer,
+           request->request_body + request->request_body_offset,
+           copy_length);
+    request->request_body_offset += copy_length;
+    return (ssize_t)copy_length;
 }
 
 size_t httpd_req_get_url_query_len(httpd_req_t *request)
@@ -358,6 +390,37 @@ esp_err_t health_get_snapshot(health_snapshot_t *snapshot)
     }
     *snapshot = s_health_snapshot;
     return ESP_OK;
+}
+
+esp_err_t health_get_monitor_status(health_monitor_status_t *status)
+{
+    assert(status != NULL);
+    if (s_health_status_result != ESP_OK) {
+        return s_health_status_result;
+    }
+    *status = s_health_monitor_status;
+    return ESP_OK;
+}
+
+esp_err_t health_set_enabled(bool enabled)
+{
+    ++s_health_control_calls;
+    s_health_control_enabled = enabled;
+    if (s_health_control_result != ESP_OK) {
+        return s_health_control_result;
+    }
+    s_health_monitor_status.enabled = enabled;
+    s_health_monitor_status.ready = false;
+    s_health_monitor_status.lifecycle = enabled
+                                            ? HEALTH_MONITOR_RUNNING
+                                            : HEALTH_MONITOR_OFF;
+    return ESP_OK;
+}
+
+esp_err_t health_refresh_lease(void)
+{
+    ++s_health_refresh_calls;
+    return s_health_refresh_result;
 }
 
 const char *health_state_name(health_state_t state)
@@ -710,18 +773,39 @@ static void prepare_health_snapshot(void)
 static void verify_health(const httpd_uri_t *health_uri)
 {
     httpd_req_t request = {0};
+    s_health_status_result = ESP_OK;
+    s_health_refresh_result = ESP_OK;
+    s_health_monitor_status = (health_monitor_status_t){
+        .enabled = false,
+        .ready = false,
+        .lifecycle = HEALTH_MONITOR_OFF,
+    };
     s_health_result = ESP_ERR_NOT_FOUND;
     assert(health_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_type, "application/json") == 0);
-    assert(strcmp(request.response_body, "{\"ready\":false}") == 0);
+    assert(strcmp(request.response_body,
+                  "{\"enabled\":false,\"ready\":false,"
+                  "\"state\":\"off\"}") == 0);
+    assert(s_health_refresh_calls == 0);
     assert(strcmp(find_header(&request, "Cache-Control"), "no-store") == 0);
     reset_request(&request);
 
+    s_health_monitor_status.enabled = true;
+    s_health_monitor_status.lifecycle = HEALTH_MONITOR_RUNNING;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_body,
+                  "{\"enabled\":true,\"ready\":false,"
+                  "\"state\":\"starting\"}") == 0);
+    assert(s_health_refresh_calls == 1);
+    reset_request(&request);
+
     prepare_health_snapshot();
+    s_health_monitor_status.ready = true;
     s_fake_time_us = 12500000;
     s_health_result = ESP_OK;
     assert(health_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_type, "application/json") == 0);
+    assert(strstr(request.response_body, "\"enabled\":true") != NULL);
     assert(strstr(request.response_body, "\"ready\":true") != NULL);
     assert(strstr(request.response_body, "\"sequence\":7") != NULL);
     assert(strstr(request.response_body, "\"state\":\"healthy\"") != NULL);
@@ -751,8 +835,21 @@ static void verify_health(const httpd_uri_t *health_uri)
                   "\"minimum_free_bytes\":120000") != NULL);
     assert(strstr(request.response_body,
                   "\"largest_free_block_bytes\":524288") != NULL);
+    assert(s_health_refresh_calls == 2);
     reset_request(&request);
 
+    s_health_status_result = ESP_FAIL;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_500) == 0);
+    reset_request(&request);
+
+    s_health_status_result = ESP_OK;
+    s_health_refresh_result = ESP_FAIL;
+    assert(health_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_500) == 0);
+    reset_request(&request);
+
+    s_health_refresh_result = ESP_OK;
     s_health_result = ESP_FAIL;
     assert(health_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_status, HTTPD_500) == 0);
@@ -769,6 +866,91 @@ static void verify_health(const httpd_uri_t *health_uri)
     assert(health_uri->handler(&request) == ESP_OK);
     assert(strcmp(request.response_status, HTTPD_500) == 0);
     reset_request(&request);
+}
+
+static void verify_health_control(const httpd_uri_t *control_uri)
+{
+    assert(control_uri->method == HTTP_POST);
+    s_health_control_result = ESP_OK;
+    s_health_status_result = ESP_OK;
+    s_health_refresh_result = ESP_OK;
+    s_health_control_calls = 0;
+
+    const char *enable_body = " { \"enabled\" : true } ";
+    httpd_req_t request = {
+        .request_body = enable_body,
+        .content_len = strlen(enable_body),
+    };
+    assert(control_uri->handler(&request) == ESP_OK);
+    assert(s_health_control_calls == 1);
+    assert(s_health_control_enabled);
+    assert(strcmp(request.response_body,
+                  "{\"enabled\":true,\"ready\":false,"
+                  "\"state\":\"starting\"}") == 0);
+    reset_request(&request);
+
+    const char *disable_body = "{\"enabled\":false}";
+    request = (httpd_req_t){
+        .request_body = disable_body,
+        .content_len = strlen(disable_body),
+    };
+    assert(control_uri->handler(&request) == ESP_OK);
+    assert(s_health_control_calls == 2);
+    assert(!s_health_control_enabled);
+    assert(strcmp(request.response_body,
+                  "{\"enabled\":false,\"ready\":false,"
+                  "\"state\":\"off\"}") == 0);
+    reset_request(&request);
+
+    static const char *invalid_bodies[] = {
+        "",
+        "{}",
+        "{\"enabled\":1}",
+        "{\"enabled\":true,\"extra\":false}",
+        "{\"enabled\":true,\"enabled\":false}",
+        "not-json",
+    };
+    for (size_t index = 0;
+         index < sizeof(invalid_bodies) / sizeof(invalid_bodies[0]);
+         ++index) {
+        request = (httpd_req_t){
+            .request_body = invalid_bodies[index],
+            .content_len = strlen(invalid_bodies[index]),
+        };
+        assert(control_uri->handler(&request) == ESP_OK);
+        assert(strcmp(request.response_status, HTTPD_400) == 0);
+        reset_request(&request);
+    }
+    assert(s_health_control_calls == 2);
+
+    const char *oversized_body =
+        "{\"enabled\":true,\"padding\":\""
+        "012345678901234567890123456789012345678901234567890123456789\"}";
+    request = (httpd_req_t){
+        .request_body = oversized_body,
+        .content_len = strlen(oversized_body),
+    };
+    assert(control_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    request = (httpd_req_t){
+        .request_body = "{}",
+        .content_len = 5,
+    };
+    assert(control_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_400) == 0);
+    reset_request(&request);
+
+    s_health_control_result = ESP_FAIL;
+    request = (httpd_req_t){
+        .request_body = enable_body,
+        .content_len = strlen(enable_body),
+    };
+    assert(control_uri->handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, HTTPD_500) == 0);
+    reset_request(&request);
+    s_health_control_result = ESP_OK;
 }
 
 static void prepare_inference_metadata(void)
@@ -903,7 +1085,7 @@ int main(void)
     assert(s_heap_allocations == 1);
     assert(s_heap_frees == 0);
     assert(s_server_count == 2);
-    assert(s_uri_count[0] == 6);
+    assert(s_uri_count[0] == 7);
     assert(s_uri_count[1] == 1);
     assert(s_server_config[0].server_port == 80);
     assert(s_server_config[0].ctrl_port == 32768);
@@ -924,6 +1106,8 @@ int main(void)
     const httpd_uri_t *capture_uri = find_uri(0, "/capture");
     const httpd_uri_t *status_uri = find_uri(0, "/api/status");
     const httpd_uri_t *health_uri = find_uri(0, "/api/health");
+    const httpd_uri_t *health_control_uri =
+        find_uri(0, "/api/health/control");
     const httpd_uri_t *inference_uri = find_uri(0, "/api/inference");
     const httpd_uri_t *inference_image_uri =
         find_uri(0, "/api/inference/image");
@@ -932,6 +1116,7 @@ int main(void)
     assert(capture_uri != NULL);
     assert(status_uri != NULL);
     assert(health_uri != NULL);
+    assert(health_control_uri != NULL);
     assert(inference_uri != NULL);
     assert(inference_image_uri != NULL);
     assert(stream_uri != NULL);
@@ -942,6 +1127,7 @@ int main(void)
     verify_stream(stream_uri);
     verify_status(status_uri);
     verify_health(health_uri);
+    verify_health_control(health_control_uri);
     verify_inference_metadata(inference_uri);
     verify_inference_image(inference_image_uri);
     verify_stream_stops_cleanly(stream_uri);
