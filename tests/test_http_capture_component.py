@@ -286,7 +286,7 @@ global.fetch=async(url,options={})=>{
 };
 function sample(sequence){return{
   enabled:true,ready:true,sequence,state:'healthy',reason_flags:0,
-  sample_age_ms:5,uptime_ms:sequence*1000,inference_age_ms:100,
+  sample_age_ms:5,monitor_uptime_ms:sequence*1000,inference_age_ms:100,
   inference:{
     attempt_running:false,attempt_count:sequence,success_count:sequence,
     failure_count:0,consecutive_failure_count:0,last_error:0,

@@ -811,7 +811,8 @@ static void verify_health(const httpd_uri_t *health_uri)
     assert(strstr(request.response_body, "\"state\":\"healthy\"") != NULL);
     assert(strstr(request.response_body, "\"reason_flags\":0") != NULL);
     assert(strstr(request.response_body, "\"sample_age_ms\":500") != NULL);
-    assert(strstr(request.response_body, "\"uptime_ms\":11000") != NULL);
+    assert(strstr(request.response_body,
+                  "\"monitor_uptime_ms\":11000") != NULL);
     assert(strstr(request.response_body, "\"inference_age_ms\":250") != NULL);
     assert(strstr(request.response_body, "\"attempt_running\":false") != NULL);
     assert(strstr(request.response_body, "\"attempt_count\":5") != NULL);

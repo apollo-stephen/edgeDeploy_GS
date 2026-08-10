@@ -401,7 +401,7 @@ static esp_err_t health_get_handler(httpd_req_t *request)
         "{\"enabled\":true,\"ready\":true,\"sequence\":%" PRIu32
         ",\"state\":\"%s\",\"reason_flags\":%" PRIu32
         ",\"sample_age_ms\":%" PRIu64
-        ",\"uptime_ms\":%" PRIu64
+        ",\"monitor_uptime_ms\":%" PRIu64
         ",\"inference_age_ms\":%" PRIu64
         ",\"inference\":{\"attempt_running\":%s"
         ",\"attempt_count\":%" PRIu32
