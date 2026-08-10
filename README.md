@@ -19,6 +19,8 @@ and runs a MobileNetV1 waste classifier on-device.
 - A local Python tool for continuous dataset capture without rebuilding the
   firmware.
 - Serialized camera-frame ownership across streaming, capture, and inference.
+- A runtime health snapshot covering inference progress, task stack headroom,
+  and internal/PSRAM heap state.
 
 ## Requirements
 
@@ -52,8 +54,10 @@ frame concurrently.
 
 ### MobileNetV1 inference
 
-After the camera, SoftAP, and HTTP services start, the `ei_inference` task runs
-once every two seconds on CPU1. CPU0 remains available for Wi-Fi and HTTP work.
+After the camera and SoftAP start, the `ei_inference` task runs once every two
+seconds on CPU1. CPU0 remains available for Wi-Fi and HTTP work. The health
+monitor starts next, and the HTTP services are exposed only after both tasks
+start successfully.
 
 Each inference iteration:
 
@@ -86,6 +90,22 @@ I (...) inference: Prediction: wet (0.98438)
 The MobileNetV1 classifier uses an approximately 126 KB tensor arena. Large
 allocations use PSRAM, and a custom 4 MB factory partition accommodates the
 inference runtime and generated model.
+
+### Runtime health monitoring
+
+The unpinned `runtime_health` task runs once per second at priority 1. It
+records inference attempts, successes, failures, consecutive failures, last
+error, latest and maximum execution time, and inference/task stack high-water
+marks. It also samples current, minimum, and largest-free-block values for
+internal memory and PSRAM.
+
+The snapshot begins in `starting` with a seven-second startup grace period.
+After the first successful result, a result older than six seconds or three
+consecutive inference failures changes the state to `degraded`; a later valid
+sample can return it to `healthy`. This is a result-freshness and liveness
+check, not a hard real-time Deadline guarantee. This version reports snapshots
+and logs state transitions only: it does not restart tasks, reset the device,
+or feed a hardware watchdog.
 
 ## Configure the SoftAP
 
@@ -171,6 +191,7 @@ gallery and browser memory; every successful frame remains on disk. Capturing
 | --- | --- |
 | `GET /capture` | Returns one fresh `image/jpeg`. |
 | `GET /api/status` | Returns camera readiness, counters, last JPEG length, free heap, and free PSRAM. |
+| `GET /api/health` | Returns the latest runtime health state, inference counters/timing, stack high-water marks, and internal/PSRAM heap statistics; returns `{"ready":false}` before the first sample. |
 | `GET /api/inference` | Returns the latest prediction, dynamic scores, timing, JPEG length, sequence, and age, or `{"ready":false}` before the first result. |
 | `GET /api/inference/image?sequence=N` | Returns the JPEG for the current inference sequence; stale sequences receive HTTP 409. |
 
@@ -183,6 +204,12 @@ file capture.jpg
 
 The response should contain `Content-Type: image/jpeg`,
 `X-Frame-Width: 128`, and `X-Frame-Height: 128`.
+
+To inspect the latest runtime health snapshot:
+
+```bash
+curl http://192.168.4.1/api/health
+```
 
 ## Verification
 

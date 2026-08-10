@@ -17,6 +17,7 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 - 同一网页展示实时预览、实际参与推理的图像、各类别分数、最终结果和耗时。
 - 使用本机 Python 工具连续采集数据集，无需重新构建固件。
 - 直播、单帧拍照和推理通过统一的摄像头帧所有权机制安全协作。
+- 提供运行健康快照，覆盖推理进度、任务栈余量以及内部内存和 PSRAM 状态。
 
 ## 环境与硬件要求
 
@@ -47,8 +48,9 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 
 ### MobileNetV1 推理
 
-摄像头、SoftAP 和 HTTP 服务启动后，`ei_inference` 任务每两秒在 CPU1 上
-运行一次，CPU0 主要留给 Wi-Fi 和 HTTP 服务。
+摄像头和 SoftAP 启动后，`ei_inference` 任务每两秒在 CPU1 上运行一次，
+CPU0 主要留给 Wi-Fi 和 HTTP 服务。随后启动健康监控任务；只有两个任务均
+成功启动，HTTP 服务才会对外开放。
 
 每轮推理执行以下步骤：
 
@@ -77,6 +79,19 @@ I (...) inference: Prediction: wet (0.98438)
 
 MobileNetV1 分类器使用约 126 KB Tensor Arena。大块内存分配到 PSRAM，
 项目使用自定义 4 MB factory 分区容纳推理运行时和生成模型。
+
+### 运行健康监控
+
+不绑定核心的 `runtime_health` 任务以优先级 1 每秒运行一次。它记录推理尝试、
+成功、失败和连续失败次数，最近错误，最近及最大单次执行时间，以及推理任务和
+健康任务的栈高水位；同时采样内部内存和 PSRAM 的当前剩余量、历史最小剩余量
+及最大连续空闲块。
+
+快照最初处于 `starting`，首次推理有 7 秒启动宽限期。首次成功后，如果最近
+成功结果超过 6 秒没有更新，或连续 3 次推理失败，状态变为 `degraded`；后续
+有效样本可使状态恢复为 `healthy`。这里检测的是结果新鲜度超时和任务活性，
+并不代表硬实时 Deadline 保证。当前版本只提供快照并记录状态迁移日志，不会
+自动重启任务、复位设备或喂硬件看门狗。
 
 ## 配置 SoftAP
 
@@ -157,6 +172,7 @@ python3 dataset_capture_server.py
 | --- | --- |
 | `GET /capture` | 返回一张新的 `image/jpeg`。 |
 | `GET /api/status` | 返回摄像头状态、采集计数、最近 JPEG 长度、剩余 Heap 和 PSRAM。 |
+| `GET /api/health` | 返回最近的运行健康状态、推理计数与耗时、任务栈高水位及内部内存/PSRAM 统计；首次采样前返回 `{"ready":false}`。 |
 | `GET /api/inference` | 返回最近一次预测、动态类别分数、耗时、JPEG 长度、序列号和更新时间；首次结果前返回 `{"ready":false}`。 |
 | `GET /api/inference/image?sequence=N` | 返回当前推理序列对应的 JPEG；过期序列返回 HTTP 409。 |
 
@@ -169,6 +185,12 @@ file capture.jpg
 
 响应应包含 `Content-Type: image/jpeg`、`X-Frame-Width: 128` 和
 `X-Frame-Height: 128`。
+
+可通过以下命令查看最新运行健康快照：
+
+```bash
+curl http://192.168.4.1/api/health
+```
 
 ## 验证
 
