@@ -26,7 +26,7 @@ static int s_release_calls;
 static int s_sequence;
 static int s_send_sequence;
 static int s_release_sequence;
-static char s_response_copy[8192];
+static char s_response_copy[32768];
 static uint8_t s_chunk_copy[16384];
 static size_t s_chunk_length;
 static int s_chunk_calls;

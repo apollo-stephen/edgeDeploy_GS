@@ -304,7 +304,7 @@ git commit -m "feat: expose runtime health control"
 - Consumes: `GET /api/health` and `POST /api/health/control` from Task 2.
 - Produces: the approved A-layout dashboard interaction with a 60-sample browser history.
 
-- [ ] **Step 1: Add failing Node.js behavior tests for the health panel**
+- [x] **Step 1: Add failing Node.js behavior tests for the health panel**
 
 Extend the existing Node DOM fake with `hidden`, `disabled`, `dataset`, `setAttribute()`, `getAttribute()`, `classList.toggle()`, and SVG path attributes. Add a health fetch script that proves:
 
@@ -328,7 +328,7 @@ if (healthHistory.length !== 0) throw new Error('history not cleared');
 
 Also assert the exact Chinese disabled copy, both chart titles, error-state text, and that no health interval is created when discovery reports off.
 
-- [ ] **Step 2: Run dashboard tests and verify failure**
+- [x] **Step 2: Run dashboard tests and verify failure**
 
 Run:
 
@@ -338,7 +338,7 @@ python3 -m unittest tests.test_http_capture_component.HttpCaptureComponentBehavi
 
 Expected: the new DOM/behavior assertions fail because the health panel functions and elements are absent.
 
-- [ ] **Step 3: Add the approved responsive panel markup and styles**
+- [x] **Step 3: Add the approved responsive panel markup and styles**
 
 Append the `Runtime health` section below `Latest result`. Use these stable element IDs so tests and logic remain explicit:
 
@@ -356,7 +356,7 @@ Append the `Runtime health` section below `Latest result`. Use these stable elem
 
 Inside the body add the six approved metric values, `healthReasons`, `latencyChart`, and `memoryChart`. Use CSS Grid with three metric columns and two chart columns on desktop, two metric columns and one chart column below 560 px.
 
-- [ ] **Step 4: Implement state discovery, control, bounded history, and SVG rendering**
+- [x] **Step 4: Implement state discovery, control, bounded history, and SVG rendering**
 
 Implement the named functions `discoverHealthState()`, `setHealthEnabled(enabled)`, `pollHealth()`, `appendHealthSample(snapshot)`, `renderHealthSnapshot(snapshot)`, `renderHealthCharts()`, `clearHealthHistory()`, and `setHealthConnectionError(message)`.
 
@@ -377,7 +377,7 @@ Render SVG paths from normalized sample coordinates without a library. Latency u
 
 Page load calls `discoverHealthState()` once. The health interval exists only while the board reports enabled. Explicit disable stops the interval only after the POST succeeds, clears history, and collapses the panel. Fetch failure shows `连接中断 / 状态未知`; a later successful discovery restores the board's actual state.
 
-- [ ] **Step 5: Run dashboard and HTTP tests**
+- [x] **Step 5: Run dashboard and HTTP tests**
 
 Run:
 
@@ -387,7 +387,7 @@ python3 -m unittest tests.test_http_capture_component -v
 
 Expected: Node syntax/behavior, dashboard rendering, API routes, stream behavior, and response serialization pass.
 
-- [ ] **Step 6: Commit the dashboard slice**
+- [x] **Step 6: Commit the dashboard slice**
 
 ```bash
 git add components/HTTP_CAPTURE/dashboard_page.c tests/test_http_capture_component.py
