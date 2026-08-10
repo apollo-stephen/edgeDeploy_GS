@@ -63,8 +63,14 @@ static int s_task_create_calls;
 static uint32_t s_task_stack_depth;
 static UBaseType_t s_task_priority;
 static BaseType_t s_task_core_id = -1;
+static int s_fake_task_storage;
+static TaskHandle_t s_created_task_handle = &s_fake_task_storage;
+static UBaseType_t s_stack_high_water_mark = 3072;
+static int s_stack_high_water_mark_calls;
 static int s_classifier_calls;
 static EI_IMPULSE_ERROR s_classifier_result = EI_IMPULSE_OK;
+static int64_t s_classifier_time_advance_us;
+static bool s_verify_attempt_running;
 static float s_scores[EI_CLASSIFIER_LABEL_COUNT] = {0.05f, 0.90f, 0.05f};
 static std::vector<uint32_t> s_observed_pixels;
 static std::string s_logs;
@@ -208,12 +214,22 @@ extern "C" BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task,
     assert(task != nullptr);
     assert(strcmp(name, "ei_inference") == 0);
     assert(argument == nullptr);
-    assert(task_handle == nullptr);
+    assert(task_handle != nullptr);
     ++s_task_create_calls;
     s_task_stack_depth = stack_depth;
     s_task_priority = priority;
     s_task_core_id = core_id;
+    if (s_task_result == pdPASS) {
+        *task_handle = s_created_task_handle;
+    }
     return s_task_result;
+}
+
+extern "C" UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
+{
+    assert(task == s_created_task_handle);
+    ++s_stack_high_water_mark_calls;
+    return s_stack_high_water_mark;
 }
 
 extern "C" void vTaskDelay(TickType_t ticks)
@@ -229,6 +245,14 @@ EI_IMPULSE_ERROR run_classifier(ei::signal_t *signal,
     assert(signal->total_length == EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE);
     assert(!debug);
     ++s_classifier_calls;
+
+    if (s_verify_attempt_running) {
+        inference_runtime_stats_t stats = {};
+        assert(inference_get_runtime_stats(&stats) == ESP_OK);
+        assert(stats.attempt_running);
+        assert(stats.attempt_count >= 1);
+    }
+    s_fake_time_us += s_classifier_time_advance_us;
 
     float pixels[2] = {};
     assert(signal->get_data(0, 2, pixels) == 0);
@@ -267,8 +291,11 @@ extern "C" void test_log_write(const char *level,
 static void verify_not_ready(void)
 {
     inference_snapshot_metadata_t metadata = {};
+    inference_runtime_stats_t runtime = {};
     uint8_t jpeg[INFERENCE_MAX_JPEG_BYTES] = {};
     size_t jpeg_bytes = 0;
+    assert(inference_get_runtime_stats(nullptr) == ESP_ERR_INVALID_ARG);
+    assert(inference_get_runtime_stats(&runtime) == ESP_ERR_NOT_FOUND);
     assert(inference_get_latest_metadata(nullptr) == ESP_ERR_INVALID_ARG);
     assert(inference_get_latest_metadata(&metadata) == ESP_ERR_NOT_FOUND);
     assert(inference_copy_latest_jpeg(1,
@@ -288,6 +315,14 @@ static void verify_start_success(void)
     assert(s_task_stack_depth == 8192);
     assert(s_task_priority == 5);
     assert(s_task_core_id == 1);
+    inference_runtime_stats_t runtime = {};
+    assert(inference_get_runtime_stats(&runtime) == ESP_OK);
+    assert(runtime.task_started);
+    assert(!runtime.attempt_running);
+    assert(runtime.attempt_count == 0);
+    assert(runtime.success_count == 0);
+    assert(runtime.failure_count == 0);
+    assert(runtime.stack_high_water_mark_bytes == s_stack_high_water_mark);
     assert(s_allocation_calls == 4);
     assert(s_allocation_sizes[0] == CAMERA_FRAME_WIDTH *
                                         CAMERA_FRAME_HEIGHT * 3U);
@@ -329,6 +364,18 @@ static void verify_published_jpeg(uint32_t sequence)
 static void verify_first_success(void)
 {
     assert(inference_run_once() == ESP_OK);
+    inference_runtime_stats_t runtime = {};
+    assert(inference_get_runtime_stats(&runtime) == ESP_OK);
+    assert(runtime.attempt_count == 1);
+    assert(runtime.success_count == 1);
+    assert(runtime.failure_count == 0);
+    assert(runtime.consecutive_failure_count == 0);
+    assert(runtime.last_error == ESP_OK);
+    assert(!runtime.attempt_running);
+    assert(runtime.last_attempt_finished_us >=
+           runtime.last_attempt_started_us);
+    assert(runtime.last_success_us == runtime.last_attempt_finished_us);
+    assert(runtime.last_duration_us <= runtime.max_duration_us);
     const inference_snapshot_metadata_t metadata = get_metadata();
     assert(metadata.ready);
     assert(metadata.sequence == 1);
@@ -386,14 +433,37 @@ static void verify_success(void)
                                       sizeof(s_jpeg) - 1,
                                       &jpeg_bytes) == ESP_ERR_INVALID_SIZE);
 
+    s_verify_attempt_running = true;
+    s_classifier_time_advance_us = 2000;
     assert(inference_run_once() == ESP_OK);
     assert(get_metadata().sequence == 2);
+    inference_runtime_stats_t runtime = {};
+    assert(inference_get_runtime_stats(&runtime) == ESP_OK);
+    assert(runtime.attempt_count == 2);
+    assert(runtime.success_count == 2);
+    assert(runtime.last_duration_us == 2000);
+    assert(runtime.max_duration_us == 2000);
+    assert(s_stack_high_water_mark_calls > 0);
     assert(inference_copy_latest_jpeg(1,
                                       jpeg_copy,
                                       sizeof(jpeg_copy),
                                       &jpeg_bytes) == ESP_ERR_INVALID_STATE);
     verify_published_jpeg(2);
     puts("inference success behavior passed");
+}
+
+static void verify_last_runtime_failure(esp_err_t expected_error)
+{
+    inference_runtime_stats_t runtime = {};
+    assert(inference_get_runtime_stats(&runtime) == ESP_OK);
+    assert(runtime.attempt_count == 2);
+    assert(runtime.success_count == 1);
+    assert(runtime.failure_count == 1);
+    assert(runtime.consecutive_failure_count == 1);
+    assert(runtime.last_error == expected_error);
+    assert(!runtime.attempt_running);
+    assert(runtime.last_attempt_finished_us >=
+           runtime.last_attempt_started_us);
 }
 
 static void verify_mutex_failure(void)
@@ -444,6 +514,7 @@ static void verify_invalid_frame(void)
     verify_first_success();
     s_frame.width = 127;
     assert(inference_run_once() == ESP_ERR_INVALID_ARG);
+    verify_last_runtime_failure(ESP_ERR_INVALID_ARG);
     verify_snapshot_unchanged(1);
     puts("inference invalid frame cleanup passed");
 }
@@ -454,6 +525,7 @@ static void verify_oversized_frame(void)
     verify_first_success();
     s_frame.len = INFERENCE_MAX_JPEG_BYTES + 1U;
     assert(inference_run_once() == ESP_ERR_INVALID_SIZE);
+    verify_last_runtime_failure(ESP_ERR_INVALID_SIZE);
     verify_snapshot_unchanged(1);
     puts("inference oversized frame preservation passed");
 }
@@ -464,7 +536,19 @@ static void verify_decode_failure(void)
     verify_first_success();
     s_decode_result = false;
     assert(inference_run_once() == ESP_FAIL);
+    verify_last_runtime_failure(ESP_FAIL);
     verify_snapshot_unchanged(1);
+
+    s_decode_result = true;
+    s_classifier_time_advance_us = 4000;
+    assert(inference_run_once() == ESP_OK);
+    inference_runtime_stats_t runtime = {};
+    assert(inference_get_runtime_stats(&runtime) == ESP_OK);
+    assert(runtime.attempt_count == 3);
+    assert(runtime.success_count == 2);
+    assert(runtime.failure_count == 1);
+    assert(runtime.consecutive_failure_count == 0);
+    assert(runtime.max_duration_us == 4000);
     puts("inference decode failure cleanup passed");
 }
 
@@ -474,6 +558,7 @@ static void verify_classifier_failure(void)
     verify_first_success();
     s_classifier_result = EI_IMPULSE_TFLITE_ERROR;
     assert(inference_run_once() == ESP_FAIL);
+    verify_last_runtime_failure(ESP_FAIL);
     verify_snapshot_unchanged(1);
     puts("inference classifier failure passed");
 }
@@ -485,6 +570,7 @@ static void verify_resize_failure(void)
     const int classifier_calls = s_classifier_calls;
     s_resize_result = -7;
     assert(inference_run_once() == ESP_FAIL);
+    verify_last_runtime_failure(ESP_FAIL);
     assert(s_classifier_calls == classifier_calls);
     verify_snapshot_unchanged(1);
     puts("inference resize failure passed");

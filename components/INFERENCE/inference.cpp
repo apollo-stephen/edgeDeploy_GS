@@ -49,6 +49,9 @@ uint8_t *s_staging_jpeg;
 uint8_t *s_published_jpeg;
 SemaphoreHandle_t s_snapshot_mutex;
 inference_snapshot_metadata_t s_metadata;
+TaskHandle_t s_task_handle;
+portMUX_TYPE s_runtime_lock = portMUX_INITIALIZER_UNLOCKED;
+inference_runtime_stats_t s_runtime_stats;
 bool s_started;
 
 void release_resources()
@@ -74,6 +77,10 @@ void release_resources()
         s_snapshot_mutex = nullptr;
     }
     s_metadata = {};
+    s_task_handle = nullptr;
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime_stats = {};
+    portEXIT_CRITICAL(&s_runtime_lock);
 }
 
 bool copy_label(char destination[INFERENCE_LABEL_BYTES], const char *source)
@@ -249,7 +256,7 @@ extern "C" esp_err_t inference_start(void)
                                                            kTaskStackBytes,
                                                            nullptr,
                                                            kTaskPriority,
-                                                           nullptr,
+                                                           &s_task_handle,
                                                            kTaskCoreId);
     if (task_result != pdPASS) {
         release_resources();
@@ -258,19 +265,18 @@ extern "C" esp_err_t inference_start(void)
     }
 
     s_started = true;
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime_stats = {};
+    s_runtime_stats.task_started = true;
+    portEXIT_CRITICAL(&s_runtime_lock);
     ESP_LOGI(TAG,
              "Inference task started with %u ms period",
              static_cast<unsigned int>(kInferencePeriodMs));
     return ESP_OK;
 }
 
-extern "C" esp_err_t inference_run_once(void)
+static esp_err_t run_inference_attempt()
 {
-    if (!s_started || s_capture_rgb_buffer == nullptr ||
-        s_model_rgb_buffer == nullptr) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     camera_fb_t *frame = camera_capture_frame(kCaptureTimeoutMs);
     if (frame == nullptr) {
         ESP_LOGW(TAG, "Camera frame unavailable");
@@ -363,6 +369,67 @@ extern "C" esp_err_t inference_run_once(void)
     xSemaphoreGive(s_snapshot_mutex);
 
     log_result(next_metadata);
+    return ESP_OK;
+}
+
+extern "C" esp_err_t inference_run_once(void)
+{
+    if (!s_started || s_capture_rgb_buffer == nullptr ||
+        s_model_rgb_buffer == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint64_t started_us =
+        static_cast<uint64_t>(esp_timer_get_time());
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime_stats.attempt_running = true;
+    ++s_runtime_stats.attempt_count;
+    s_runtime_stats.last_attempt_started_us = started_us;
+    portEXIT_CRITICAL(&s_runtime_lock);
+
+    const esp_err_t result = run_inference_attempt();
+    const uint64_t finished_us =
+        static_cast<uint64_t>(esp_timer_get_time());
+    const uint64_t duration_us = finished_us >= started_us
+                                     ? finished_us - started_us
+                                     : 0U;
+
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime_stats.attempt_running = false;
+    s_runtime_stats.last_attempt_finished_us = finished_us;
+    s_runtime_stats.last_duration_us = duration_us;
+    if (duration_us > s_runtime_stats.max_duration_us) {
+        s_runtime_stats.max_duration_us = duration_us;
+    }
+    s_runtime_stats.last_error = result;
+    if (result == ESP_OK) {
+        ++s_runtime_stats.success_count;
+        s_runtime_stats.consecutive_failure_count = 0;
+        s_runtime_stats.last_success_us = finished_us;
+    }
+    else {
+        ++s_runtime_stats.failure_count;
+        ++s_runtime_stats.consecutive_failure_count;
+    }
+    portEXIT_CRITICAL(&s_runtime_lock);
+    return result;
+}
+
+extern "C" esp_err_t inference_get_runtime_stats(
+    inference_runtime_stats_t *stats)
+{
+    if (stats == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_started || s_task_handle == nullptr) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    portENTER_CRITICAL(&s_runtime_lock);
+    *stats = s_runtime_stats;
+    portEXIT_CRITICAL(&s_runtime_lock);
+    stats->stack_high_water_mark_bytes =
+        static_cast<uint32_t>(uxTaskGetStackHighWaterMark(s_task_handle));
     return ESP_OK;
 }
 

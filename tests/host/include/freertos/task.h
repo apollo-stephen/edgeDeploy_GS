@@ -15,6 +15,7 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task,
                                    UBaseType_t priority,
                                    TaskHandle_t *task_handle,
                                    BaseType_t core_id);
+UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
 #ifdef __cplusplus
 }

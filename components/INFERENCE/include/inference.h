@@ -33,6 +33,22 @@ typedef struct {
     size_t jpeg_bytes;
 } inference_snapshot_metadata_t;
 
+typedef struct {
+    bool task_started;
+    bool attempt_running;
+    uint32_t attempt_count;
+    uint32_t success_count;
+    uint32_t failure_count;
+    uint32_t consecutive_failure_count;
+    esp_err_t last_error;
+    uint64_t last_attempt_started_us;
+    uint64_t last_attempt_finished_us;
+    uint64_t last_success_us;
+    uint64_t last_duration_us;
+    uint64_t max_duration_us;
+    uint32_t stack_high_water_mark_bytes;
+} inference_runtime_stats_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,6 +57,7 @@ esp_err_t inference_start(void);
 esp_err_t inference_run_once(void);
 esp_err_t inference_get_latest_metadata(
     inference_snapshot_metadata_t *metadata);
+esp_err_t inference_get_runtime_stats(inference_runtime_stats_t *stats);
 esp_err_t inference_copy_latest_jpeg(uint32_t expected_sequence,
                                      uint8_t *destination,
                                      size_t capacity,
