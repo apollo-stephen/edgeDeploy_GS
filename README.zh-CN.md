@@ -6,7 +6,15 @@ EdgeDeploy GS 是运行在 ESP32-S3 上的边缘视觉固件：它通过 OV5640
 摄像头采集原生 128×128 JPEG 图像，提供本地 Wi-Fi 推理网页，并在设备端
 运行 MobileNetV1 垃圾分类模型。
 
-![EdgeDeploy GS 演示](演示.gif)
+## 演示
+
+### 实时推理
+
+![EdgeDeploy GS 实时推理演示](演示.gif)
+
+### 运行健康监控
+
+![EdgeDeploy GS 运行健康监控演示](演示%202.gif)
 
 ## 主要功能
 

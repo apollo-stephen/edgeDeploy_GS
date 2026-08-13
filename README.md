@@ -6,7 +6,15 @@ EdgeDeploy GS is an ESP32-S3 edge-vision firmware that captures native
 128x128 JPEG frames from an OV5640 camera, serves a local Wi-Fi dashboard,
 and runs a MobileNetV1 waste classifier on-device.
 
-![EdgeDeploy GS demonstration](演示.gif)
+## Demonstrations
+
+### Live inference
+
+![EdgeDeploy GS live inference demonstration](演示.gif)
+
+### Runtime health monitoring
+
+![EdgeDeploy GS runtime health monitoring demonstration](演示%202.gif)
 
 ## Features
 
